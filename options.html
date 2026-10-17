@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Webtoon Translator settings</title>
+  <style>
+    body { font: 15px/1.5 Arial, sans-serif; max-width: 520px; margin: 40px auto; padding: 0 16px; color: #222; }
+    h1 { font-size: 20px; }
+    label { display: block; margin-top: 18px; font-weight: 700; }
+    input { width: 100%; padding: 8px; margin-top: 6px; box-sizing: border-box; font-size: 14px; }
+    small { color: #666; display: block; margin-top: 4px; }
+    button { margin-top: 22px; padding: 9px 18px; font-size: 14px; cursor: pointer; }
+    #msg { margin-left: 12px; color: #1a7f37; }
+    .tip { margin-top: 28px; padding: 10px 12px; background: #eef4ff; border-radius: 8px; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <h1>Webtoon Translator</h1>
+
+  <label for="apiKey">Gemini API key</label>
+  <input id="apiKey" type="password" autocomplete="off" placeholder="Paste your key from Google AI Studio">
+  <small>Stored only in this browser. Get a free key at aistudio.google.com.</small>
+
+  <label for="model">Model</label>
+  <input id="model" type="text" placeholder="gemini-3.8-flash">
+  <small>Any Gemini model that accepts images. Flash class models are the best mix of speed and cost.</small>
+
+  <label for="lang">Translate into</label>
+  <input id="lang" type="text" placeholder="English">
+
+  <label for="batchSeconds">Seconds to wait before sending a batch</label>
+  <input id="batchSeconds" type="number" min="3" max="60" placeholder="10">
+  <small>Panels you scroll past in this window are stitched into one image and sent as a single request.</small>
+
+  <button id="save">Save</button>
+  <button id="clear" style="margin-left:8px">Clear translation cache</button><span id="msg"></span>
+
+  <div class="tip">
+    On a Kakao chapter, use the gear button above the EN button for series notes, saved corrections and the images sent to Gemini. Click any translated bubble to edit it.
+  </div>
+
+  <script src="options.js"></script>
+</body>
+</html>

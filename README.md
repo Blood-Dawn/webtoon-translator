@@ -1,0 +1,60 @@
+# Webtoon Translator (Gemini)
+
+A Chrome extension that translates Korean webtoon speech bubbles to English while you scroll on Kakao. It reads the page, sends batches of panels to Google's Gemini API, and draws the English text over the original bubbles. You can fix any bubble by hand.
+
+Works on `webtoon.kakao.com` and `page.kakao.com`.
+
+## Install (about 2 minutes)
+
+1. Click the green **Code** button on this page, then **Download ZIP**, and unzip it somewhere permanent (Chrome loads the extension from that folder, so do not delete it afterward).
+2. Open `chrome://extensions` in Chrome.
+3. Turn on **Developer mode** (top right).
+4. Click **Load unpacked** and pick the unzipped folder, the one that contains `manifest.json`.
+5. Open the extension's settings (the Details button, then Extension options) and paste your Gemini API key.
+
+To update later, download the new ZIP, replace the files, and press the reload arrow on the extension card.
+
+## Get a Gemini API key
+
+Create a key at [Google AI Studio](https://aistudio.google.com/apikey). The key is stored only in your browser's extension storage and is sent only to Google's Gemini API. Check Google's current pricing and free tier limits, since you pay for your own usage.
+
+## Using it
+
+1. Open a chapter on Kakao. Use the blue **EN** button (bottom right) or press Alt+T to switch translation on.
+2. Scroll normally. Panels you pass in a short window (10 seconds by default) are stitched into one tall image and sent as a single request, which keeps you under rate limits.
+3. Translated panels are cached by image content, so scrolling back up or reloading never pays for the same panel twice.
+
+### Fixing a bubble
+
+Click any translated bubble to open the editor.
+
+* Retype the text. The bubble updates live.
+* **A-**, **A+** and **Auto** change the font size.
+* Drag the bubble to move it. Drag the blue dot at its corner to resize it. The arrow buttons nudge it a little at a time.
+* **Make female** and **Make male** swap he/she/his/her wording in one click.
+* **Remember this wording** saves your version, and it is used automatically whenever the same Korean line shows up again.
+* **Save** keeps your changes. **Close** or Esc throws them away.
+
+### The gear panel
+
+The gear button above EN has four tabs.
+
+* **Status:** turn translation on or off, set the wait time, see stats, clear the cache.
+* **Notes:** series notes sent to Gemini with every batch, for example "Han Seo-jin is a woman, use she/her". This is the strongest fix for wrong pronouns, because Korean often leaves gender out.
+* **Fixes:** the list of remembered wordings. Delete any you no longer want.
+* **Images:** the last few stitched images that were sent to Gemini, with the text boxes it found outlined in red.
+
+## Notes and limits
+
+* Notes and new prompt behavior only apply to panels translated from now on. Use **Clear translation cache** on the Status tab to redo panels you already have.
+* AI translation makes mistakes, especially with names, slang and gender. The editor exists for that reason.
+* The default model is `gemini-3.8-flash`. Google retires models over time. If you see a "model not found" error, enter a current Gemini Flash model name in the extension options.
+* Panel images are sent to Google's Gemini API for translation. Do not use this on content you are not comfortable sending to Google.
+
+## Disclaimer
+
+This project is not affiliated with or endorsed by Kakao or Google. It is meant for reading content you have legitimate access to. It does not unlock, download or bypass anything. You are responsible for following the terms of the sites you use it on.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
