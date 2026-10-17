@@ -45,7 +45,25 @@ const LOG = process.env.PT_LOG || path.join(__dirname, "requests.jsonl");
   await options.fill("#apiKey", KEY);
   await options.click("#save");
   await options.waitForTimeout(800);
-  await sw.evaluate(() => chrome.storage.local.set({ enabled: true, batchSeconds: 3, notes: "CANARY-NOTES private series notes" }));
+  await options.click("#testKey");
+  await options.waitForTimeout(1500);
+  const testResult = await options.textContent("#testresult");
+  const step2Done = await options.evaluate(() => document.getElementById("step2").classList.contains("done"));
+
+  // A hand-edited settings file must not be able to add keys or touch the API key.
+  const hostile = path.join(profile, "hostile.json");
+  fs.writeFileSync(
+    hostile,
+    JSON.stringify({ app: "webtoon-translator", version: 1, settings: { model: "imported-model", apiKey: "HACKED", evil: 1, corrections: { "안녕": "Hi", bad: { x: 1 } } } })
+  );
+  await options.setInputFiles("#importFile", hostile);
+  await options.waitForTimeout(800);
+  const imported = await sw.evaluate(async () => {
+    const all = await chrome.storage.local.get(null);
+    return { model: all.model, evil: all.evil, apiKey: all.apiKey, corrections: all.corrections, privateKey: await Secrets.get("apiKey") };
+  });
+
+  await sw.evaluate(() => chrome.storage.local.set({ enabled: true, batchSeconds: 3, model: "gemini-3.8-flash", notes: "CANARY-NOTES private series notes" }));
   await options.close();
 
   const page = await ctx.newPage();
@@ -68,6 +86,7 @@ const LOG = process.env.PT_LOG || path.join(__dirname, "requests.jsonl");
     });
     contentScriptKeys = r.result && r.result.value;
   }
+  const keptImages = await sw.evaluate(async () => (await chrome.storage.local.get("dbgBatches")).dbgBatches);
   await ctx.close();
 
   const log = fs.readFileSync(LOG, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
@@ -78,10 +97,15 @@ const LOG = process.env.PT_LOG || path.join(__dirname, "requests.jsonl");
   const probe = probeRaw ? JSON.parse(probeRaw) : null;
 
   const checks = [
-    ["the key appears in exactly one request, to Google, in the x-goog-api-key header only",
-      withKey.length === 1 && withKey[0].host === "generativelanguage.googleapis.com" &&
-      String(withKey[0].headers["x-goog-api-key"] || "").includes("CANARY-SECRET") &&
-      !withKey[0].url.includes("CANARY-SECRET") && !withKey[0].body.includes("CANARY-SECRET")],
+    ["the key appears only in requests to Google (key test and translation), in the x-goog-api-key header only",
+      withKey.length >= 1 && withKey.every((e) => e.host === "generativelanguage.googleapis.com" &&
+        String(e.headers["x-goog-api-key"] || "").includes("CANARY-SECRET") &&
+        !e.url.includes("CANARY-SECRET") && !e.body.includes("CANARY-SECRET"))],
+    ["Test my key reports success and ticks the checklist", /works/i.test(testResult || "") && step2Done],
+    ["importing a hostile settings file adds no unknown keys and leaves the API key alone",
+      imported.model === "imported-model" && imported.evil === undefined && imported.apiKey === undefined &&
+      imported.privateKey === KEY && imported.corrections && imported.corrections["안녕"] === "Hi" && imported.corrections.bad === undefined],
+    ["debug copies of the comic pages are not kept unless the reader turns them on", keptImages === undefined],
     ["translation still works (a request reached the Gemini endpoint)", geminiCalls.length >= 1],
     ["the script on the Kakao page cannot read the key from storage", Array.isArray(contentScriptKeys) && contentScriptKeys.length === 0],
     ["the extension did not fetch a web address chosen by the page", extensionFetchedBait.length === 0],

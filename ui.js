@@ -303,7 +303,8 @@
       /* ignore */
     }
     if (!res || !res.ok || !res.batches.length) {
-      box.textContent = "Nothing has been sent to Gemini yet. Turn translating on and scroll for a few seconds.";
+      box.textContent =
+        "No images are kept. Turn on \"Keep debug images\" in the extension settings, then translate a few panels.";
       return;
     }
     box.textContent = "";

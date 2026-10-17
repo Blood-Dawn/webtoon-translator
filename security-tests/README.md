@@ -17,6 +17,9 @@ These tests run the extension in a real Chromium and check where your API key an
 * The extension does not fetch an address the page chose.
 * A hostile page cannot read the extension panel or the key.
 * A key stored by an older version is moved to private storage and removed from regular storage.
+* Test my key succeeds and sends the key only to Google.
+* Importing a hand-edited settings file cannot add unknown settings or change the API key.
+* Copies of comic pages are not kept unless the reader turns on debug images.
 
 ## Running it
 

@@ -5,24 +5,42 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Webtoon Translator settings</title>
   <style>
-    body { font: 15px/1.5 Arial, sans-serif; max-width: 520px; margin: 40px auto; padding: 0 16px; color: #222; }
+    body { font: 15px/1.5 Arial, sans-serif; max-width: 540px; margin: 40px auto; padding: 0 16px; color: #222; }
     h1 { font-size: 20px; }
+    h2 { font-size: 16px; margin-top: 32px; }
     label { display: block; margin-top: 18px; font-weight: 700; }
-    input { width: 100%; padding: 8px; margin-top: 6px; box-sizing: border-box; font-size: 14px; }
+    input[type=text], input[type=password], input[type=number] { width: 100%; padding: 8px; margin-top: 6px; box-sizing: border-box; font-size: 14px; }
     small { color: #666; display: block; margin-top: 4px; }
-    button { margin-top: 22px; padding: 9px 18px; font-size: 14px; cursor: pointer; }
+    button { margin-top: 12px; padding: 9px 18px; font-size: 14px; cursor: pointer; }
     #msg { margin-left: 12px; color: #1a7f37; }
+    #testresult { margin-top: 8px; font-size: 14px; }
+    .ok { color: #1a7f37; }
+    .bad { color: #b3261e; }
     .tip { margin-top: 28px; padding: 10px 12px; background: #eef4ff; border-radius: 8px; font-size: 14px; }
+    ol.steps { padding-left: 0; list-style: none; margin: 12px 0 0; }
+    ol.steps li { padding: 8px 10px 8px 34px; margin-bottom: 6px; background: #f6f6f6; border-radius: 8px; position: relative; }
+    ol.steps li::before { content: attr(data-n); position: absolute; left: 10px; top: 8px; width: 18px; height: 18px; border-radius: 50%; background: #999; color: #fff; font-size: 12px; text-align: center; line-height: 18px; }
+    ol.steps li.done::before { content: "\2713"; background: #1a7f37; }
+    .check { display: flex; gap: 8px; align-items: flex-start; margin-top: 18px; font-weight: 400; }
+    .check input { margin-top: 4px; width: auto; }
   </style>
 </head>
 <body>
   <h1>Webtoon Translator</h1>
 
+  <ol class="steps" id="steps">
+    <li data-n="1" id="step1">Get a free Gemini key at <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Google AI Studio</a> and paste it below.</li>
+    <li data-n="2" id="step2">Press Save, then Test my key.</li>
+    <li data-n="3" id="step3">Open a chapter on <a href="https://webtoon.kakao.com/" target="_blank" rel="noopener">Kakao</a> and press the blue EN button (or Alt+T).</li>
+  </ol>
+
   <label for="apiKey">Gemini API key</label>
   <input id="apiKey" type="password" autocomplete="off" placeholder="Paste your key from Google AI Studio">
   <small id="keystate"></small>
-  <small>The key stays on this computer, in the extension's own private storage. It is sent only to Google (generativelanguage.googleapis.com) with each translation request. The developer never receives it. Get a key at aistudio.google.com.</small>
-  <button id="removeKey" style="display:none;margin-top:8px">Remove saved key</button>
+  <small>The key stays on this computer, in the extension's own private storage. It is sent only to Google (generativelanguage.googleapis.com) with each translation request. The developer never receives it.</small>
+  <button id="testKey">Test my key</button>
+  <button id="removeKey" style="display:none;margin-left:8px">Remove saved key</button>
+  <div id="testresult"></div>
 
   <label for="model">Model</label>
   <input id="model" type="text" placeholder="gemini-3.8-flash">
@@ -35,8 +53,16 @@
   <input id="batchSeconds" type="number" min="3" max="60" placeholder="10">
   <small>Panels you scroll past in this window are stitched into one image and sent as a single request.</small>
 
+  <label class="check"><input id="keepDebug" type="checkbox"><span>Keep debug images<small>Saves the last 5 stitched images sent to Gemini so the gear panel can show them. They are copies of comic pages stored on this computer. Off by default.</small></span></label>
+
   <button id="save">Save</button>
   <button id="clear" style="margin-left:8px">Clear translation cache</button><span id="msg"></span>
+
+  <h2>Back up your settings</h2>
+  <small>Exports your model, language, wait time, series notes and saved fixes to a file. It never includes your API key or the translation cache.</small>
+  <button id="export">Export settings</button>
+  <button id="import" style="margin-left:8px">Import settings</button>
+  <input id="importFile" type="file" accept="application/json,.json" style="display:none">
 
   <div class="tip">
     On a Kakao chapter, use the gear button above the EN button for series notes, saved corrections and the images sent to Gemini. Click any translated bubble to edit it.

@@ -66,7 +66,36 @@ async function installRefererRule() {
   }
 }
 
-chrome.runtime.onInstalled.addListener(installRefererRule);
+// Turns an API failure into a sentence a non-technical reader can act on.
+function friendlyError(status, body) {
+  const text = scrub(String(body || "")).toLowerCase();
+  if (status === 400 && text.includes("api key")) return "Google did not accept this API key. Check that you copied all of it.";
+  if (status === 401 || status === 403) return "Google refused this key. It may be wrong, restricted to another service, or switched off.";
+  if (status === 404) return "That model name was not found. Pick a current Gemini Flash model in the settings.";
+  if (status === 429) return "You hit Google's rate limit. Wait a minute, or raise the batch wait time in the settings.";
+  if (status >= 500) return "Google's service is having trouble. Try again in a minute.";
+  return "Google returned an error (" + status + "). " + scrub(String(body || "").slice(0, 120));
+}
+
+async function testKey(key, model) {
+  const k = String(key || "").trim();
+  if (!k) return { ok: false, error: "No key to test yet. Paste one and press Save." };
+  try {
+    const r = await fetch(
+      "https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(model || DEFAULTS.model),
+      { headers: { "x-goog-api-key": k } }
+    );
+    if (r.ok) return { ok: true };
+    return { ok: false, error: friendlyError(r.status, await r.text()) };
+  } catch (e) {
+    return { ok: false, error: "Could not reach Google. Check your internet connection." };
+  }
+}
+
+chrome.runtime.onInstalled.addListener((details) => {
+  installRefererRule();
+  if (details.reason === "install") chrome.runtime.openOptionsPage();
+});
 chrome.runtime.onStartup.addListener(installRefererRule);
 chrome.action.onClicked.addListener(() => chrome.runtime.openOptionsPage());
 
@@ -82,6 +111,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     fetchImage(msg.url)
       .then((img) => sendResponse({ ok: true, dataUrl: "data:" + img.mime + ";base64," + img.data }))
       .catch((e) => sendResponse({ ok: false, error: e.message }));
+    return true;
+  }
+  if (msg.type === "testKey") {
+    // Only the extension's own settings page may run this.
+    if (!sender.url || !sender.url.startsWith("chrome-extension://" + chrome.runtime.id + "/")) return false;
+    testKey(msg.key, msg.model).then(sendResponse);
     return true;
   }
   if (msg.type === "getBatches") {
@@ -181,7 +216,7 @@ async function callGemini(key, model, mime, data, prompt) {
     }
     if (!r.ok) {
       const t = await r.text();
-      throw new Error("Gemini error " + r.status + ": " + scrub(t.slice(0, 200)));
+      throw new Error(friendlyError(r.status, t));
     }
     const j = await r.json();
     const parts = (j.candidates && j.candidates[0] && j.candidates[0].content && j.candidates[0].content.parts) || [];
@@ -190,7 +225,7 @@ async function callGemini(key, model, mime, data, prompt) {
     if (!Array.isArray(parsed)) throw new Error("Unexpected reply format from Gemini");
     return parsed;
   }
-  throw new Error("Gemini is rate limiting requests. Wait a minute and toggle the button off and on.");
+  throw new Error(friendlyError(429, ""));
 }
 
 // Keeps the last few images that were sent, so the GUI can show exactly what Gemini saw.
@@ -206,7 +241,7 @@ async function saveBatch(entry) {
 }
 
 async function translate(url, dataUrl, panels) {
-  const cfg = await chrome.storage.local.get(["model", "lang", "notes", "corrections"]);
+  const cfg = await chrome.storage.local.get(["model", "lang", "notes", "corrections", "keepDebug"]);
   const apiKey = await Secrets.get("apiKey");
   if (!apiKey) {
     const err = new Error("Add your Gemini API key in the extension settings first.");
@@ -229,6 +264,7 @@ async function translate(url, dataUrl, panels) {
 
   const prompt = buildPrompt(lang, cfg.notes, cfg.corrections);
   const boxes = await callGemini(apiKey, model, img.mime, img.data, prompt);
-  saveBatch({ t: Date.now(), model, panels: panels || 1, dataUrl: "data:" + img.mime + ";base64," + img.data, boxes });
+  // Kept only when the reader turned on "keep debug images", since they are copies of the comic pages.
+  if (cfg.keepDebug) saveBatch({ t: Date.now(), model, panels: panels || 1, dataUrl: "data:" + img.mime + ";base64," + img.data, boxes });
   return boxes;
 }
