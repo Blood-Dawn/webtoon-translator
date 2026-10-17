@@ -1,5 +1,41 @@
+importScripts("secret.js");
+
 const DEFAULTS = { model: "gemini-3.8-flash", lang: "English" };
 const MAX_DEBUG_BATCHES = 5;
+const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
+// Panel images are only ever downloaded from Kakao's own hosts, and only the Kakao reader pages may ask.
+const IMAGE_HOSTS = ["kakaocdn.net", "daumcdn.net", "kakao.com"];
+const READER_HOSTS = ["page.kakao.com", "webtoon.kakao.com"];
+
+function allowedImageUrl(raw) {
+  try {
+    const u = new URL(raw);
+    if (u.protocol !== "https:") return false;
+    return IMAGE_HOSTS.some((h) => u.hostname === h || u.hostname.endsWith("." + h));
+  } catch (e) {
+    return false;
+  }
+}
+
+// Accepts messages only from this extension's own pages and from its content script on the Kakao reader.
+function trustedSender(sender) {
+  if (!sender || sender.id !== chrome.runtime.id) return false;
+  if (sender.url && sender.url.startsWith("chrome-extension://" + chrome.runtime.id + "/")) return true;
+  if (!sender.tab || !sender.url) return false;
+  try {
+    const u = new URL(sender.url);
+    return u.protocol === "https:" && READER_HOSTS.includes(u.hostname);
+  } catch (e) {
+    return false;
+  }
+}
+
+// Makes sure an API key can never end up in an error message or toast.
+function scrub(text) {
+  return String(text).replace(/AIza[0-9A-Za-z_-]{16,}/g, "[key hidden]");
+}
+
+Secrets.migrate().catch((e) => console.warn("Could not move the API key to private storage:", e));
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -35,7 +71,7 @@ chrome.runtime.onStartup.addListener(installRefererRule);
 chrome.action.onClicked.addListener(() => chrome.runtime.openOptionsPage());
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (!msg) return false;
+  if (!msg || !trustedSender(sender)) return false;
   if (msg.type === "translate") {
     translate(msg.url, msg.dataUrl, msg.panels)
       .then((boxes) => sendResponse({ ok: true, boxes }))
@@ -71,9 +107,12 @@ function toBase64(buf) {
 }
 
 async function fetchImage(url) {
-  const r = await fetch(url, { credentials: "include" });
+  if (!allowedImageUrl(url)) throw new Error("Blocked: panel images can only come from Kakao hosts.");
+  const r = await fetch(url, { credentials: "omit" });
   if (!r.ok) throw new Error("Could not download the panel image (" + r.status + ")");
+  if (!allowedImageUrl(r.url)) throw new Error("Blocked: the image redirected away from Kakao.");
   const buf = await r.arrayBuffer();
+  if (buf.byteLength > MAX_IMAGE_BYTES) throw new Error("The panel image is too large.");
   let mime = (r.headers.get("content-type") || "").split(";")[0].trim();
   if (!mime.startsWith("image/")) mime = "image/jpeg";
   return { mime, data: toBase64(buf) };
@@ -142,7 +181,7 @@ async function callGemini(key, model, mime, data, prompt) {
     }
     if (!r.ok) {
       const t = await r.text();
-      throw new Error("Gemini error " + r.status + ": " + t.slice(0, 200));
+      throw new Error("Gemini error " + r.status + ": " + scrub(t.slice(0, 200)));
     }
     const j = await r.json();
     const parts = (j.candidates && j.candidates[0] && j.candidates[0].content && j.candidates[0].content.parts) || [];
@@ -167,8 +206,9 @@ async function saveBatch(entry) {
 }
 
 async function translate(url, dataUrl, panels) {
-  const cfg = await chrome.storage.local.get(["apiKey", "model", "lang", "notes", "corrections"]);
-  if (!cfg.apiKey) {
+  const cfg = await chrome.storage.local.get(["model", "lang", "notes", "corrections"]);
+  const apiKey = await Secrets.get("apiKey");
+  if (!apiKey) {
     const err = new Error("Add your Gemini API key in the extension settings first.");
     err.code = "NO_KEY";
     throw err;
@@ -180,14 +220,15 @@ async function translate(url, dataUrl, panels) {
   let img;
   if (dataUrl) {
     // Panels are read from the page (blob: images) and stitched by the content script.
-    const comma = dataUrl.indexOf(",");
-    img = { mime: dataUrl.slice(5, dataUrl.indexOf(";")), data: dataUrl.slice(comma + 1) };
+    const m = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl);
+    if (!m || m[2].length > MAX_IMAGE_BYTES * 1.4) throw new Error("The panel image was not in a supported format.");
+    img = { mime: m[1], data: m[2] };
   } else {
     img = await fetchImage(url);
   }
 
   const prompt = buildPrompt(lang, cfg.notes, cfg.corrections);
-  const boxes = await callGemini(cfg.apiKey, model, img.mime, img.data, prompt);
+  const boxes = await callGemini(apiKey, model, img.mime, img.data, prompt);
   saveBatch({ t: Date.now(), model, panels: panels || 1, dataUrl: "data:" + img.mime + ";base64," + img.data, boxes });
   return boxes;
 }

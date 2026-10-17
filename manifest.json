@@ -1,13 +1,12 @@
 {
   "manifest_version": 3,
   "name": "Webtoon Translator (Gemini)",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Translates Korean webtoon speech bubbles on Kakao as you scroll, using the Gemini API.",
   "permissions": ["storage", "unlimitedStorage", "declarativeNetRequest"],
   "host_permissions": [
     "https://page.kakao.com/*",
     "https://webtoon.kakao.com/*",
-    "https://*.kakao.com/*",
     "https://*.kakaocdn.net/*",
     "https://*.daumcdn.net/*",
     "https://generativelanguage.googleapis.com/*"
@@ -20,6 +19,9 @@
       "run_at": "document_idle"
     }
   ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  },
   "options_page": "options.html",
   "action": { "default_title": "Webtoon Translator settings" }
 }

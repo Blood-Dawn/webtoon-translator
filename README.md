@@ -51,6 +51,15 @@ The gear button above EN has four tabs.
 * The default model is `gemini-3.8-flash`. Google retires models over time. If you see a "model not found" error, enter a current Gemini Flash model name in the extension options.
 * Panel images are sent to Google's Gemini API for translation. Do not use this on content you are not comfortable sending to Google.
 
+## Privacy and security
+
+* **Your Gemini key stays on your computer.** It is stored in the extension's own private storage, which web pages and the script the extension runs on Kakao pages cannot open. It is sent only to `generativelanguage.googleapis.com`, in a request header, with each translation request. The developer never receives it.
+* **No server, no analytics.** The only network requests the extension makes go to Google's Gemini API and to Kakao's image hosts.
+* **What Google receives:** the stitched panel images, your series notes and your last 40 saved fixes. According to a [third party comparison](https://openrouter.ai/blog/tutorials/free-llm-apis-compared/), Google may use prompts from its free tier to improve its products outside the EU, UK and EEA, so check Google's current terms before sending content you want kept private.
+* **What stays local:** translations, your edits, notes, and the last 5 image batches shown in the Images tab. **Clear translation cache** in the extension options removes the cache and those images.
+* **Protect your key.** In Google AI Studio, restrict the key to the Generative Language API and set a spending alert. You can remove the saved key at any time from the extension options.
+* **Checked in a real browser.** The `security-tests` folder runs the extension against a simulated site and verifies where a fake key goes. See [SECURITY.md](SECURITY.md) for details and how to report a problem.
+
 ## Disclaimer
 
 This project is not affiliated with or endorsed by Kakao or Google. It is meant for reading content you have legitimate access to. It does not unlock, download or bypass anything. You are responsible for following the terms of the sites you use it on.

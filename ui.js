@@ -8,7 +8,7 @@
   const host = document.createElement("div");
   host.id = "kt-ui-host";
   host.style.cssText = "all:initial;position:fixed;top:0;left:0;width:0;height:0;z-index:2147483647;";
-  const root = host.attachShadow({ mode: "open" });
+  const root = host.attachShadow({ mode: "closed" });
 
   root.innerHTML = `
 <style>

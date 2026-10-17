@@ -2,5 +2,7 @@ node_modules/
 .DS_Store
 Thumbs.db
 *.zip
+*.pem
+requests.jsonl
 *.log
 .env
