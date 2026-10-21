@@ -19,12 +19,17 @@
            color: #eee; border-radius: 12px; box-shadow: 0 8px 30px rgba(0,0,0,.5); display: none; font-size: 13px; }
   .panel.open { display: block; }
   .tabs { display: flex; position: sticky; top: 0; background: #2b2d31; z-index: 1; }
-  .tabs button { flex: 1; padding: 10px 4px; background: none; border: none; color: #bbb; cursor: pointer; font-size: 13px;
+  .tabs button { flex: 1; padding: 10px 2px; background: none; border: none; color: #bbb; cursor: pointer; font-size: 12px;
                  border-bottom: 2px solid transparent; }
   .tabs button.on { color: #fff; border-bottom-color: #4c8dff; }
   .pane { display: none; padding: 12px; }
   .pane.on { display: block; }
   label { display: block; margin: 10px 0 4px; color: #bbb; }
+  .g { border-bottom: 1px solid #33353a; padding: 7px 0; }
+  .g input[type=text], .add input[type=text], select { background: #111214; color: #eee; border: 1px solid #3a3c41; border-radius: 6px; padding: 5px 6px; font-size: 12px; }
+  .g input[type=text] { width: 100%; margin: 4px 0; }
+  .add input[type=text] { flex: 1; min-width: 0; }
+  .tag { font-size: 11px; color: #9aa0a6; margin-left: 6px; }
   textarea, input[type=number] { width: 100%; background: #111214; color: #eee; border: 1px solid #3a3c41; border-radius: 6px;
                                   padding: 6px; font-size: 13px; }
   textarea { resize: vertical; min-height: 90px; }
@@ -66,6 +71,7 @@
   <div class="tabs">
     <button data-tab="status" class="on">Status</button>
     <button data-tab="notes">Notes</button>
+    <button data-tab="glossary">Glossary</button>
     <button data-tab="fixes">Fixes</button>
     <button data-tab="images">Images</button>
   </div>
@@ -84,6 +90,21 @@
     <textarea id="notes" style="min-height:170px" placeholder="Examples:&#10;The rookie agent with the prosthetic leg is a woman (she/her).&#10;Gwajang-nim = Section Chief.&#10;Keep honorifics out of the English."></textarea>
     <div class="row"><button class="b primary" id="savenotes">Save notes</button><span id="notesmsg" class="hint"></span></div>
     <div class="hint">This is the best way to stop wrong genders. Name the character and say he or she. It applies to panels translated from now on. Clear the cache to redo panels you already have.</div>
+  </div>
+
+  <div class="pane" data-pane="glossary">
+    <div class="hint" id="glosscount"></div>
+    <div id="glosspending"></div>
+    <div id="glossapproved"></div>
+    <label>Add an entry</label>
+    <div class="row add"><input type="text" id="gko" placeholder="Korean"><input type="text" id="gen" placeholder="English"></div>
+    <div class="row add">
+      <select id="gtype"><option value="character">Character</option><option value="term">Term</option></select>
+      <select id="ggender"><option value="">Gender unknown</option><option value="female">Female</option><option value="male">Male</option></select>
+      <select id="gscope"><option value="series">This series</option><option value="all">All series</option></select>
+      <button class="b primary" id="gadd">Add</button>
+    </div>
+    <div class="hint">Gemini suggests names and terms as you read. They wait here until you approve them, and only approved entries are sent back to Gemini. Characters with a gender fix wrong pronouns. Entries that appear in a chapter are used first, up to 60 per request.</div>
   </div>
 
   <div class="pane" data-pane="fixes">
@@ -152,6 +173,7 @@
       tabButtons.forEach((x) => x.classList.toggle("on", x === t));
       root.querySelectorAll(".pane").forEach((p) => p.classList.toggle("on", p.dataset.pane === t.dataset.tab));
       if (t.dataset.tab === "fixes") renderFixes();
+      if (t.dataset.tab === "glossary") renderGlossary();
     })
   );
 
@@ -235,6 +257,127 @@
       list.appendChild(row);
     });
   }
+
+  // ---------- glossary ----------
+  function mkBtn(label, cls, fn) {
+    const b = document.createElement("button");
+    b.className = "b " + (cls || "");
+    b.textContent = label;
+    b.addEventListener("click", fn);
+    return b;
+  }
+
+  function glossRow(g) {
+    const row = document.createElement("div");
+    row.className = "g";
+    const head = document.createElement("div");
+    const ko = document.createElement("span");
+    ko.className = "ko";
+    ko.textContent = g.ko;
+    const tag = document.createElement("span");
+    tag.className = "tag";
+    tag.textContent = (g.type === "character" ? "character" : "term") + (g.series === "" ? ", all series" : "");
+    head.appendChild(ko);
+    head.appendChild(tag);
+    const en = document.createElement("input");
+    en.type = "text";
+    en.value = g.en;
+    en.maxLength = 80;
+    en.addEventListener("change", () => {
+      g.en = KT.norm(en.value) || g.en;
+      en.value = g.en;
+      KT.saveGlossary();
+    });
+    row.appendChild(head);
+    row.appendChild(en);
+    const actions = document.createElement("div");
+    actions.className = "row";
+    if (g.type === "character") {
+      const sel = document.createElement("select");
+      [["", "Gender unknown"], ["female", "Female"], ["male", "Male"]].forEach(([v, l]) => {
+        const o = document.createElement("option");
+        o.value = v;
+        o.textContent = l;
+        sel.appendChild(o);
+      });
+      sel.value = g.gender || "";
+      sel.addEventListener("change", () => {
+        g.gender = sel.value;
+        KT.saveGlossary();
+      });
+      actions.appendChild(sel);
+    }
+    if (g.status === "pending") {
+      actions.appendChild(
+        mkBtn("Approve", "primary", () => {
+          g.status = "approved";
+          KT.saveGlossary();
+          renderGlossary();
+        })
+      );
+    }
+    actions.appendChild(
+      mkBtn("Delete", "danger", () => {
+        KT.glossary.splice(KT.glossary.indexOf(g), 1);
+        KT.saveGlossary();
+        renderGlossary();
+      })
+    );
+    row.appendChild(actions);
+    return row;
+  }
+
+  function renderGlossary() {
+    const series = KT.seriesKey();
+    const mine = KT.glossary.filter((g) => g.series === series || g.series === "");
+    const pending = mine.filter((g) => g.status === "pending");
+    const approved = mine.filter((g) => g.status === "approved");
+    $("glosscount").textContent = approved.length + " approved, " + pending.length + " waiting for your review";
+    const pBox = $("glosspending");
+    const aBox = $("glossapproved");
+    pBox.textContent = "";
+    aBox.textContent = "";
+    if (pending.length) {
+      const h = document.createElement("label");
+      h.textContent = "Waiting for review";
+      pBox.appendChild(h);
+      const all = mkBtn("Approve all", "", () => {
+        pending.forEach((g) => (g.status = "approved"));
+        KT.saveGlossary();
+        renderGlossary();
+      });
+      pBox.appendChild(all);
+      pending.forEach((g) => pBox.appendChild(glossRow(g)));
+    }
+    if (approved.length) {
+      const h = document.createElement("label");
+      h.textContent = "Approved";
+      aBox.appendChild(h);
+      approved.forEach((g) => aBox.appendChild(glossRow(g)));
+    }
+  }
+
+  $("gadd").addEventListener("click", () => {
+    const ko = KT.norm($("gko").value);
+    const en = KT.norm($("gen").value);
+    if (!ko || !en) return;
+    const series = $("gscope").value === "all" ? "" : KT.seriesKey();
+    const type = $("gtype").value === "term" ? "term" : "character";
+    const gender = type === "character" ? $("ggender").value : "";
+    const old = KT.glossary.find((g) => g.ko === ko && g.series === series);
+    if (old) {
+      old.en = en;
+      old.type = type;
+      old.gender = gender;
+      old.status = "approved";
+    } else {
+      KT.glossary.push({ ko, en, type, gender, status: "approved", series, n: 0, t: Date.now() });
+    }
+    KT.saveGlossary();
+    $("gko").value = "";
+    $("gen").value = "";
+    renderGlossary();
+  });
 
   // ---------- images sent to Gemini ----------
   function buildStack(bt) {

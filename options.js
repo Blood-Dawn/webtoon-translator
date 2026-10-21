@@ -1,5 +1,5 @@
 const $ = (id) => document.getElementById(id);
-const BACKUP_KEYS = ["model", "lang", "batchSeconds", "notes", "corrections"];
+const BACKUP_KEYS = ["model", "lang", "batchSeconds", "notes", "corrections", "glossary"];
 let keyTested = false;
 
 function flash(text, ms) {
@@ -120,6 +120,23 @@ function cleanBackup(obj) {
     }
     out.corrections = c;
   }
+  if (Array.isArray(s.glossary)) {
+    const g = [];
+    for (const e of s.glossary.slice(0, 500)) {
+      if (!e || typeof e.ko !== "string" || typeof e.en !== "string" || !e.ko.trim() || !e.en.trim()) continue;
+      g.push({
+        ko: e.ko.trim().slice(0, 60),
+        en: e.en.trim().slice(0, 80),
+        type: e.type === "character" ? "character" : "term",
+        gender: e.gender === "female" || e.gender === "male" ? e.gender : "",
+        status: e.status === "approved" ? "approved" : "pending",
+        series: typeof e.series === "string" ? e.series.slice(0, 80) : "",
+        n: Number.isFinite(e.n) ? Math.max(0, Math.round(e.n)) : 0,
+        t: Number.isFinite(e.t) ? e.t : 0
+      });
+    }
+    out.glossary = g;
+  }
   return out;
 }
 
@@ -133,6 +150,13 @@ $("importFile").addEventListener("change", async (e) => {
     if (!clean) throw new Error("shape");
     const existing = await chrome.storage.local.get("corrections");
     if (clean.corrections) clean.corrections = Object.assign({}, existing.corrections || {}, clean.corrections);
+    if (clean.glossary) {
+      const have = (await chrome.storage.local.get("glossary")).glossary || [];
+      const key = (x) => x.series + "\u0000" + x.ko;
+      const merged = new Map(have.map((x) => [key(x), x]));
+      clean.glossary.forEach((x) => merged.set(key(x), x));
+      clean.glossary = Array.from(merged.values()).slice(-500);
+    }
     await chrome.storage.local.set(clean);
     if (clean.model) $("model").value = clean.model;
     if (clean.lang) $("lang").value = clean.lang;

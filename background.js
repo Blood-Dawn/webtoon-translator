@@ -102,8 +102,8 @@ chrome.action.onClicked.addListener(() => chrome.runtime.openOptionsPage());
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || !trustedSender(sender)) return false;
   if (msg.type === "translate") {
-    translate(msg.url, msg.dataUrl, msg.panels)
-      .then((boxes) => sendResponse({ ok: true, boxes }))
+    translate(msg.url, msg.dataUrl, msg.panels, msg.series)
+      .then((r) => sendResponse({ ok: true, boxes: r.boxes, terms: r.terms }))
       .catch((e) => sendResponse({ ok: false, error: e.message, code: e.code }));
     return true;
   }
@@ -153,7 +153,41 @@ async function fetchImage(url) {
   return { mime, data: toBase64(buf) };
 }
 
-function buildPrompt(lang, notes, corrections) {
+const MAX_GLOSSARY_IN_PROMPT = 60;
+const TERM_TYPES = ["character", "term"];
+const GENDERS = ["female", "male", ""];
+
+// Only entries the reader approved are sent. Terms Gemini suggests wait in the review queue first,
+// so text inside a comic can never steer later prompts on its own.
+function pickGlossary(glossary, series) {
+  const list = (Array.isArray(glossary) ? glossary : []).filter(
+    (g) => g && g.status === "approved" && typeof g.ko === "string" && typeof g.en === "string" && (g.series === "" || g.series === series)
+  );
+  list.sort((a, b) => (b.n || 0) - (a.n || 0) || (b.t || 0) - (a.t || 0));
+  const oneLine = (s) => String(s).replace(/\s+/g, " ").trim();
+  return list.slice(0, MAX_GLOSSARY_IN_PROMPT).map((g) => Object.assign({}, g, { ko: oneLine(g.ko), en: oneLine(g.en) }));
+}
+
+// Keeps only well formed term suggestions from Gemini's reply.
+function cleanTerms(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const t of raw.slice(0, 12)) {
+    if (!t || typeof t.ko !== "string" || typeof t.en !== "string") continue;
+    const ko = t.ko.trim().slice(0, 60);
+    const en = t.en.trim().slice(0, 80);
+    if (!ko || !en) continue;
+    out.push({
+      ko,
+      en,
+      type: TERM_TYPES.includes(t.type) ? t.type : "term",
+      gender: GENDERS.includes(t.gender) ? t.gender : ""
+    });
+  }
+  return out;
+}
+
+function buildPrompt(lang, notes, corrections, glossary) {
   const lines = [
     "This image is several consecutive sections of a Korean webtoon stacked vertically, separated by thin dark gray bands. Ignore the gray bands. Treat the whole image as one coordinate space.",
     "Find every piece of text a reader is meant to read: speech bubbles, thought bubbles, narration boxes, and clearly legible on-screen text or sound effects.",
@@ -165,9 +199,23 @@ function buildPrompt(lang, notes, corrections) {
     "- fg: a hex text color that is readable on that background.",
     "Skip watermarks, site logos, and credits. If the image has no text, return an empty array.",
     "Gender and pronouns: Korean often leaves out the subject and has no gendered pronouns, so decide each character's gender from what is drawn (who is speaking, who is shown, who the narration is about). Never default to male. If the image does not make the gender clear, avoid he, she, him and her by using the character's name, a title, or by rephrasing.",
-    "Use the same names, terms and speaking style for the same character everywhere in the image."
+    "Use the same names, terms and speaking style for the same character everywhere in the image.",
+    "Also return a terms array: up to 8 character names, titles and recurring terms you translated in this image. Each has ko, en, type (\"character\" or \"term\") and, for characters, gender (\"female\", \"male\" or \"\" when the image does not make it clear). Leave out anything already listed in the glossary below."
   ];
+  // Everything above is identical on every request, so Google can reuse it from its cache.
+  // The parts below change per series and go last.
   if (notes) lines.push("Notes from the reader about this series. Follow them exactly:\n" + String(notes).slice(0, 4000));
+  const chars = glossary.filter((g) => g.type === "character");
+  const terms = glossary.filter((g) => g.type !== "character");
+  if (chars.length) {
+    lines.push(
+      "Characters. Always use these English names, and use the pronouns that match the stated gender:\n" +
+        chars.map((g) => g.ko + " = " + g.en + (g.gender ? " (" + g.gender + ")" : "")).join("\n")
+    );
+  }
+  if (terms.length) {
+    lines.push("Glossary. Always translate these terms this way:\n" + terms.map((g) => g.ko + " = " + g.en).join("\n"));
+  }
   const pairs = Object.entries(corrections || {}).slice(-40);
   if (pairs.length) {
     lines.push(
@@ -182,24 +230,44 @@ async function callGemini(key, model, mime, data, prompt) {
   const url =
     "https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(model) + ":generateContent";
   const body = {
-    contents: [{ parts: [{ inline_data: { mime_type: mime, data } }, { text: prompt }] }],
+    // Instructions first, image last: the fixed instruction text then forms a stable prefix.
+    contents: [{ parts: [{ text: prompt }, { inline_data: { mime_type: mime, data } }] }],
     generationConfig: {
       temperature: 0.2,
       maxOutputTokens: 8192,
       responseMimeType: "application/json",
       responseSchema: {
-        type: "ARRAY",
-        items: {
-          type: "OBJECT",
-          properties: {
-            box_2d: { type: "ARRAY", items: { type: "INTEGER" } },
-            original: { type: "STRING" },
-            translation: { type: "STRING" },
-            bg: { type: "STRING" },
-            fg: { type: "STRING" }
+        type: "OBJECT",
+        properties: {
+          bubbles: {
+            type: "ARRAY",
+            items: {
+              type: "OBJECT",
+              properties: {
+                box_2d: { type: "ARRAY", items: { type: "INTEGER" } },
+                original: { type: "STRING" },
+                translation: { type: "STRING" },
+                bg: { type: "STRING" },
+                fg: { type: "STRING" }
+              },
+              required: ["box_2d", "original", "translation"]
+            }
           },
-          required: ["box_2d", "original", "translation"]
-        }
+          terms: {
+            type: "ARRAY",
+            items: {
+              type: "OBJECT",
+              properties: {
+                ko: { type: "STRING" },
+                en: { type: "STRING" },
+                type: { type: "STRING" },
+                gender: { type: "STRING" }
+              },
+              required: ["ko", "en"]
+            }
+          }
+        },
+        required: ["bubbles"]
       }
     }
   };
@@ -222,8 +290,10 @@ async function callGemini(key, model, mime, data, prompt) {
     const parts = (j.candidates && j.candidates[0] && j.candidates[0].content && j.candidates[0].content.parts) || [];
     const text = parts.map((p) => p.text || "").join("");
     const parsed = JSON.parse(text);
-    if (!Array.isArray(parsed)) throw new Error("Unexpected reply format from Gemini");
-    return parsed;
+    // Older replies were a bare list of bubbles; newer ones are { bubbles, terms }.
+    const bubbles = Array.isArray(parsed) ? parsed : parsed && parsed.bubbles;
+    if (!Array.isArray(bubbles)) throw new Error("Unexpected reply format from Gemini");
+    return { bubbles, terms: cleanTerms(parsed && parsed.terms) };
   }
   throw new Error(friendlyError(429, ""));
 }
@@ -240,8 +310,8 @@ async function saveBatch(entry) {
   }
 }
 
-async function translate(url, dataUrl, panels) {
-  const cfg = await chrome.storage.local.get(["model", "lang", "notes", "corrections", "keepDebug"]);
+async function translate(url, dataUrl, panels, series) {
+  const cfg = await chrome.storage.local.get(["model", "lang", "notes", "corrections", "keepDebug", "glossary"]);
   const apiKey = await Secrets.get("apiKey");
   if (!apiKey) {
     const err = new Error("Add your Gemini API key in the extension settings first.");
@@ -262,9 +332,9 @@ async function translate(url, dataUrl, panels) {
     img = await fetchImage(url);
   }
 
-  const prompt = buildPrompt(lang, cfg.notes, cfg.corrections);
-  const boxes = await callGemini(apiKey, model, img.mime, img.data, prompt);
+  const prompt = buildPrompt(lang, cfg.notes, cfg.corrections, pickGlossary(cfg.glossary, String(series || "").slice(0, 80)));
+  const { bubbles, terms } = await callGemini(apiKey, model, img.mime, img.data, prompt);
   // Kept only when the reader turned on "keep debug images", since they are copies of the comic pages.
-  if (cfg.keepDebug) saveBatch({ t: Date.now(), model, panels: panels || 1, dataUrl: "data:" + img.mime + ";base64," + img.data, boxes });
-  return boxes;
+  if (cfg.keepDebug) saveBatch({ t: Date.now(), model, panels: panels || 1, dataUrl: "data:" + img.mime + ";base64," + img.data, boxes: bubbles });
+  return { boxes: bubbles, terms };
 }

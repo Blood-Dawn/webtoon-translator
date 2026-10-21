@@ -41,6 +41,7 @@ The gear button above EN has four tabs.
 
 * **Status:** turn translation on or off, set the wait time, see stats, clear the cache.
 * **Notes:** series notes sent to Gemini with every batch, for example "Han Seo-jin is a woman, use she/her". This is the strongest fix for wrong pronouns, because Korean often leaves gender out.
+* **Glossary:** names and terms the extension learns as you read. Gemini suggests them and they wait in a review list. Approve, edit or delete each one. Only approved entries are sent back with later batches, so a wrong guess never sticks on its own. Characters can have a gender, which fixes wrong pronouns. You can also add entries yourself, for one series or for all of them. The Status tab shows how many edits you made in recent chapters, which should go down as the glossary grows.
 * **Fixes:** the list of remembered wordings. Delete any you no longer want.
 * **Images:** the last few stitched images that were sent to Gemini, with the text boxes it found outlined in red. This is off by default. Turn on **Keep debug images** in the settings page to use it.
 

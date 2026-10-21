@@ -63,6 +63,16 @@ const LOG = process.env.PT_LOG || path.join(__dirname, "requests.jsonl");
     return { model: all.model, evil: all.evil, apiKey: all.apiKey, corrections: all.corrections, privateKey: await Secrets.get("apiKey") };
   });
 
+  // Glossary: one approved entry for every series, one still waiting for review, one for another series.
+  await sw.evaluate(() =>
+    chrome.storage.local.set({
+      glossary: [
+        { ko: "한서진", en: "Han Seo-jin", type: "character", gender: "female", status: "approved", series: "", n: 3, t: 1 },
+        { ko: "대기용어", en: "PendingOnly", type: "term", gender: "", status: "pending", series: "", n: 0, t: 1 },
+        { ko: "다른작품", en: "OtherSeries", type: "term", gender: "", status: "approved", series: "other.example:9", n: 0, t: 1 }
+      ]
+    })
+  );
   await sw.evaluate(() => chrome.storage.local.set({ enabled: true, batchSeconds: 3, model: "gemini-3.8-flash", notes: "CANARY-NOTES private series notes" }));
   await options.close();
 
@@ -87,6 +97,7 @@ const LOG = process.env.PT_LOG || path.join(__dirname, "requests.jsonl");
     contentScriptKeys = r.result && r.result.value;
   }
   const keptImages = await sw.evaluate(async () => (await chrome.storage.local.get("dbgBatches")).dbgBatches);
+  const learned = await sw.evaluate(async () => (await chrome.storage.local.get("glossary")).glossary || []);
   await ctx.close();
 
   const log = fs.readFileSync(LOG, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
@@ -106,6 +117,13 @@ const LOG = process.env.PT_LOG || path.join(__dirname, "requests.jsonl");
       imported.model === "imported-model" && imported.evil === undefined && imported.apiKey === undefined &&
       imported.privateKey === KEY && imported.corrections && imported.corrections["안녕"] === "Hi" && imported.corrections.bad === undefined],
     ["debug copies of the comic pages are not kept unless the reader turns them on", keptImages === undefined],
+    ["only approved glossary entries for this series reach Gemini",
+      geminiCalls.some((e) => e.body.includes("Han Seo-jin") && e.body.includes("female")) &&
+      geminiCalls.every((e) => !e.body.includes("PendingOnly") && !e.body.includes("OtherSeries"))],
+    ["the fixed instructions come before the image in the request",
+      geminiCalls.every((e) => { const i = e.body.indexOf("inline_data"); return i === -1 || e.body.indexOf("Korean webtoon") < i; })],
+    ["a term Gemini suggests lands in the review queue as pending, not approved",
+      learned.some((g) => g.ko === "테스트용어" && g.status === "pending")],
     ["translation still works (a request reached the Gemini endpoint)", geminiCalls.length >= 1],
     ["the script on the Kakao page cannot read the key from storage", Array.isArray(contentScriptKeys) && contentScriptKeys.length === 0],
     ["the extension did not fetch a web address chosen by the page", extensionFetchedBait.length === 0],

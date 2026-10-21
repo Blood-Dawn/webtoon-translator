@@ -12,7 +12,10 @@
   const MAX_CORRECTIONS = 300;
 
   // Shared with ui.js (same isolated world).
-  const KT = (window.KT = { ui: null, settings: { batchSeconds: 10 }, corrections: {}, notes: "" });
+  const MAX_GLOSSARY = 500;
+  const MAX_PENDING = 100;
+  const MAX_CHAPTERS_TRACKED = 30;
+  const KT = (window.KT = { ui: null, settings: { batchSeconds: 10 }, corrections: {}, notes: "", glossary: [], editStats: {} });
   const settings = KT.settings;
 
   const state = {
@@ -93,8 +96,89 @@
     }
   }
 
+  // ---------- glossary: names and terms the extension learns as you read ----------
+  // Entries are grouped by the series id found in the page address. Reading is grouped by chapter path.
+  KT.seriesKey = () => {
+    const path = location.pathname;
+    const m = path.match(/\/(?:content|title)\/(\d+)/) || path.match(/(\d{4,})/);
+    return location.hostname + ":" + (m ? m[1] : "any");
+  };
+  KT.chapterKey = () => location.pathname;
+
+  async function saveGlossary() {
+    try {
+      await chrome.storage.local.set({ glossary: KT.glossary });
+    } catch (e) {
+      console.warn("[webtoon-translator] could not save glossary", e);
+    }
+  }
+  KT.saveGlossary = saveGlossary;
+
+  // Gemini's suggestions wait here for the reader's review. They are never sent back until approved.
+  function learnTerms(terms) {
+    const series = KT.seriesKey();
+    let added = 0;
+    for (const t of terms || []) {
+      const ko = norm(t.ko);
+      if (!ko) continue;
+      if (KT.glossary.some((g) => g.ko === ko && (g.series === series || g.series === ""))) continue;
+      KT.glossary.push({ ko, en: norm(t.en), type: t.type === "character" ? "character" : "term", gender: t.gender || "", status: "pending", series, n: 0, t: Date.now() });
+      added++;
+    }
+    if (!added) return;
+    const pending = KT.glossary.filter((g) => g.status === "pending");
+    if (pending.length > MAX_PENDING) {
+      const drop = new Set(pending.slice(0, pending.length - MAX_PENDING));
+      KT.glossary = KT.glossary.filter((g) => !drop.has(g));
+    }
+    if (KT.glossary.length > MAX_GLOSSARY) KT.glossary = KT.glossary.filter((g) => g.status === "approved").concat(KT.glossary.filter((g) => g.status !== "approved")).slice(0, MAX_GLOSSARY);
+    saveGlossary();
+  }
+
+  // An approved entry counts as used when its Korean text shows up in a batch, which ranks it for later prompts.
+  function countUsage(bubbles) {
+    const text = bubbles.map((b) => b.original || "").join("\n");
+    const series = KT.seriesKey();
+    let changed = false;
+    for (const g of KT.glossary) {
+      if (g.status === "approved" && (g.series === series || g.series === "") && text.includes(g.ko)) {
+        g.n = (g.n || 0) + 1;
+        g.t = Date.now();
+        changed = true;
+      }
+    }
+    if (changed) saveGlossary();
+  }
+
+  // The reader's own edits per chapter. Fewer edits over time is the sign that the glossary is working.
+  KT.noteEdit = async () => {
+    const k = KT.chapterKey();
+    KT.editStats[k] = (KT.editStats[k] || 0) + 1;
+    const keys = Object.keys(KT.editStats);
+    if (keys.length > MAX_CHAPTERS_TRACKED) delete KT.editStats[keys[0]];
+    try {
+      await chrome.storage.local.set({ editStats: KT.editStats });
+    } catch (e) {
+      /* ignore */
+    }
+  };
+
+  KT.learnText = () => {
+    const series = KT.seriesKey();
+    const mine = KT.glossary.filter((g) => g.series === series || g.series === "");
+    const approved = mine.filter((g) => g.status === "approved").length;
+    const pending = mine.filter((g) => g.status === "pending").length;
+    const edits = Object.values(KT.editStats).slice(-4);
+    return (
+      "glossary: " + approved + " approved, " + pending + " waiting for review\n" +
+      "your edits in the last chapters (newest last): " + (edits.length ? edits.join(", ") : "none yet") + "\n" +
+      "this chapter: " + (KT.editStats[KT.chapterKey()] || 0) + " edits"
+    );
+  };
+
   KT.commitPanel = async (p) => {
     if (!p || !p.key) return;
+    KT.noteEdit();
     try {
       await chrome.storage.local.set({ [p.key]: p.boxes });
     } catch (e) {
@@ -561,7 +645,8 @@
         type: "translate",
         url: "batch-" + chosen.length,
         dataUrl,
-        panels: chosen.length
+        panels: chosen.length,
+        series: KT.seriesKey()
       });
       if (!res || !res.ok) {
         const err = new Error((res && res.error) || "Translation failed");
@@ -570,6 +655,8 @@
       }
       dbg.batches++;
       dbg.panelsSent += chosen.length;
+      countUsage(res.boxes);
+      learnTerms(res.terms);
       const perPanel = splitBoxes(res.boxes, layout, W, H);
       perPanel.forEach(applyCorrections); // the reader's saved wording wins over Gemini's
       const toStore = {};
@@ -673,7 +760,8 @@
       "requests sent: " + dbg.batches + "   panels sent: " + dbg.panelsSent + "\n" +
       "last batch: " + dbg.lastBatch + "\n" +
       "last result: " + dbg.lastBoxes + "\n" +
-      "errors: " + dbg.error + "   last error: " + (dbg.lastErr || "none")
+      "errors: " + dbg.error + "   last error: " + (dbg.lastErr || "none") + "\n" +
+      KT.learnText()
     );
   };
 
@@ -711,6 +799,8 @@
       if (changes.batchSeconds) settings.batchSeconds = Number(changes.batchSeconds.newValue) || 10;
       if (changes.notes) KT.notes = changes.notes.newValue || "";
       if (changes.corrections) KT.corrections = changes.corrections.newValue || {};
+      if (changes.glossary) KT.glossary = changes.glossary.newValue || [];
+      if (changes.editStats) KT.editStats = changes.editStats.newValue || {};
     });
   } catch (e) {
     /* ignore */
@@ -719,7 +809,9 @@
   (async () => {
     let saved = false;
     try {
-      const cfg = await chrome.storage.local.get(["enabled", "batchSeconds", "notes", "corrections"]);
+      const cfg = await chrome.storage.local.get(["enabled", "batchSeconds", "notes", "corrections", "glossary", "editStats"]);
+      KT.glossary = Array.isArray(cfg.glossary) ? cfg.glossary : [];
+      KT.editStats = cfg.editStats || {};
       saved = !!cfg.enabled;
       settings.batchSeconds = Number(cfg.batchSeconds) || 10;
       KT.notes = cfg.notes || "";

@@ -79,12 +79,13 @@ https
       const host = (req.headers.host || "").split(":")[0];
       fs.appendFileSync(
         LOG,
-        JSON.stringify({ t: Date.now(), host, method: req.method, url: req.url, headers: req.headers, bodyLen: body.length, body: body.toString("utf8", 0, 600) }) + "\n"
+        JSON.stringify({ t: Date.now(), host, method: req.method, url: req.url, headers: req.headers, bodyLen: body.length, body: body.toString("utf8", 0, host === "generativelanguage.googleapis.com" ? 12000 : 600) }) + "\n"
       );
       if (host === "generativelanguage.googleapis.com") {
         const boxes = [{ box_2d: [100, 100, 300, 600], original: "test", translation: "Hello there", bg: "#ffffff", fg: "#111111" }];
+        const terms = [{ ko: "테스트용어", en: "Test Term", type: "term", gender: "" }];
         res.writeHead(200, { "content-type": "application/json", "access-control-allow-origin": "*" });
-        return res.end(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify(boxes) }] } }] }));
+        return res.end(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify({ bubbles: boxes, terms }) }] } }] }));
       }
       if (host === "webtoon.kakao.com" && req.url.startsWith("/viewer")) {
         res.writeHead(200, { "content-type": "text/html" });
