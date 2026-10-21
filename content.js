@@ -758,7 +758,7 @@
     for (const p of state.panels.values()) if (p.status === "done") done++;
     const now = Date.now();
     let next = "no batch waiting";
-    if (state.sending) next = "sending to Gemini now";
+    if (state.sending) next = settings.localReader ? "reading on this computer now" : "sending to Gemini now";
     else if (state.flushAt) next = "next send in " + Math.max(0, Math.round((state.flushAt - now) / 1000)) + "s";
     if (state.cooldownUntil > now) next += " (rate limit pause " + Math.round((state.cooldownUntil - now) / 1000) + "s)";
     return (
