@@ -82,6 +82,29 @@ https
         JSON.stringify({ t: Date.now(), host, method: req.method, url: req.url, headers: req.headers, bodyLen: body.length, body: body.toString("utf8", 0, host === "generativelanguage.googleapis.com" ? 12000 : 600) }) + "\n"
       );
       if (host === "generativelanguage.googleapis.com") {
+        // Test keys that make the fake Google answer like the real one does when a quota is hit.
+        const apiKey = String(req.headers["x-goog-api-key"] || "");
+        const quotaBody = (id, delay) =>
+          JSON.stringify({
+            error: {
+              code: 429,
+              message: "You exceeded your current quota. Quota exceeded for metric: generate_content_free_tier_requests, limit: 20\nPlease retry in " + delay + ".",
+              status: "RESOURCE_EXHAUSTED",
+              details: [
+                { "@type": "type.googleapis.com/google.rpc.QuotaFailure", violations: [{ quotaMetric: "generate_content_free_tier_requests", quotaId: id }] },
+                { "@type": "type.googleapis.com/google.rpc.RetryInfo", retryDelay: delay }
+              ]
+            }
+          });
+        if (apiKey.includes("DAILYQUOTA")) {
+          res.writeHead(429, { "content-type": "application/json" });
+          return res.end(quotaBody("GenerateRequestsPerDayPerProjectPerModel-FreeTier", "40s"));
+        }
+        if (apiKey.includes("RETRYONCE") && !global.__retried) {
+          global.__retried = true;
+          res.writeHead(429, { "content-type": "application/json" });
+          return res.end(quotaBody("GenerateRequestsPerMinutePerProjectPerModel-FreeTier", "1s"));
+        }
         const boxes = [{ box_2d: [100, 100, 300, 600], original: "test", translation: "Hello there", bg: "#ffffff", fg: "#111111" }];
         const terms = [{ ko: "테스트용어", en: "Test Term", type: "term", gender: "" }];
         res.writeHead(200, { "content-type": "application/json", "access-control-allow-origin": "*" });

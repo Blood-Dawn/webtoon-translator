@@ -78,8 +78,37 @@ async function installRefererRule() {
   }
 }
 
+// Reads Google's 429 reply to tell a per-minute limit (clears by itself) from a daily one (does not).
+function quotaInfo(raw) {
+  const out = { daily: false, noFreeQuota: false, retryMs: 0 };
+  let j;
+  try {
+    j = JSON.parse(raw);
+  } catch (e) {
+    return out;
+  }
+  const err = (j && j.error) || {};
+  for (const d of err.details || []) {
+    if (typeof d.retryDelay === "string") {
+      const m = /([\d.]+)s/.exec(d.retryDelay);
+      if (m) out.retryMs = Math.round(Number(m[1]) * 1000);
+    }
+    for (const v of d.violations || []) {
+      if (/PerDay/i.test(String(v.quotaId || "") + " " + String(v.quotaMetric || ""))) out.daily = true;
+    }
+  }
+  if (/limit:\s*0\b/.test(String(err.message || ""))) out.noFreeQuota = true;
+  return out;
+}
+
 // Turns an API failure into a sentence a non-technical reader can act on.
 function friendlyError(status, body) {
+  if (status === 429) {
+    const info = typeof body === "object" && body ? body : quotaInfo(body);
+    if (info.noFreeQuota) return "Google says this model has no free quota for your key. Pick another model in the settings, or turn on billing for the key.";
+    if (info.daily) return "Google says today's free quota for this model is used up. It resets at midnight Pacific time (3 AM Eastern). You can wait, pick another model in the settings, or turn on billing.";
+    return "You hit Google's rate limit (requests per minute). The extension waits and tries again, or raise the batch wait time in the settings.";
+  }
   const text = scrub(String(body || "")).toLowerCase();
   if (status === 400 && text.includes("api key")) return "Google did not accept this API key. Check that you copied all of it.";
   if (status === 401 || status === 403) return "Google refused this key. It may be wrong, restricted to another service, or switched off.";
@@ -299,6 +328,7 @@ async function callGemini(key, model, mime, data, prompt) {
     }
   };
 
+  let lastInfo = { daily: false, noFreeQuota: false, retryMs: 0 };
   for (let attempt = 0; attempt < 3; attempt++) {
     const r = await fetch(url, {
       method: "POST",
@@ -306,7 +336,16 @@ async function callGemini(key, model, mime, data, prompt) {
       body: JSON.stringify(body)
     });
     if (r.status === 429 || r.status === 503) {
-      await sleep(3000 * (attempt + 1));
+      const info = r.status === 429 ? quotaInfo(await r.text().catch(() => "")) : { retryMs: 0 };
+      lastInfo = info;
+      // A daily or zero quota will not clear in seconds, so say so right away instead of retrying.
+      if (info.daily || info.noFreeQuota) {
+        const err = new Error(friendlyError(429, info));
+        err.code = "DAILY_QUOTA";
+        throw err;
+      }
+      // Wait as long as Google asks (up to a minute), otherwise back off a little more each time.
+      await sleep(Math.min(60000, info.retryMs ? info.retryMs + 500 : 3000 * (attempt + 1)));
       continue;
     }
     if (!r.ok) {
@@ -322,7 +361,7 @@ async function callGemini(key, model, mime, data, prompt) {
     if (!Array.isArray(bubbles)) throw new Error("Unexpected reply format from Gemini");
     return { bubbles, terms: cleanTerms(parsed && parsed.terms) };
   }
-  throw new Error(friendlyError(429, ""));
+  throw new Error(friendlyError(429, lastInfo));
 }
 
 // Keeps the last few images that were sent, so the GUI can show exactly what Gemini saw.

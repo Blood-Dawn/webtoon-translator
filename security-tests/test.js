@@ -96,6 +96,26 @@ const LOG = process.env.PT_LOG || path.join(__dirname, "requests.jsonl");
     });
     contentScriptKeys = r.result && r.result.value;
   }
+  // Quota handling: a daily limit is reported at once, a per-minute limit waits as long as Google asks and then succeeds.
+  const quota = await sw.evaluate(async () => {
+    const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+    const out = {};
+    let t0 = Date.now();
+    try {
+      await callGemini("AIzaDAILYQUOTA00000000000000000000", "gemini-3.8-flash", "image/png", png, "x");
+      out.daily = { threw: false };
+    } catch (e) {
+      out.daily = { threw: true, code: e.code, msg: e.message, ms: Date.now() - t0 };
+    }
+    t0 = Date.now();
+    try {
+      const r = await callGemini("AIzaRETRYONCE00000000000000000000", "gemini-3.8-flash", "image/png", png, "x");
+      out.retry = { ok: Array.isArray(r.bubbles), ms: Date.now() - t0 };
+    } catch (e) {
+      out.retry = { ok: false, msg: e.message };
+    }
+    return out;
+  });
   const keptImages = await sw.evaluate(async () => (await chrome.storage.local.get("dbgBatches")).dbgBatches);
   const learned = await sw.evaluate(async () => (await chrome.storage.local.get("glossary")).glossary || []);
   await ctx.close();
@@ -117,6 +137,9 @@ const LOG = process.env.PT_LOG || path.join(__dirname, "requests.jsonl");
       imported.model === "imported-model" && imported.evil === undefined && imported.apiKey === undefined &&
       imported.privateKey === KEY && imported.corrections && imported.corrections["안녕"] === "Hi" && imported.corrections.bad === undefined],
     ["debug copies of the comic pages are not kept unless the reader turns them on", keptImages === undefined],
+    ["a used-up daily quota is reported at once with the reset time, not retried",
+      quota.daily.threw && quota.daily.code === "DAILY_QUOTA" && /midnight Pacific/.test(quota.daily.msg) && quota.daily.ms < 2000],
+    ["a per-minute limit waits as long as Google asks, then succeeds", quota.retry.ok && quota.retry.ms >= 1000 && quota.retry.ms < 15000],
     ["only approved glossary entries for this series reach Gemini",
       geminiCalls.some((e) => e.body.includes("Han Seo-jin") && e.body.includes("female")) &&
       geminiCalls.every((e) => !e.body.includes("PendingOnly") && !e.body.includes("OtherSeries"))],

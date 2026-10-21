@@ -684,7 +684,8 @@
       dbg.error++;
       dbg.lastErr = e.message || String(e);
       console.warn("[webtoon-translator] batch failed", e);
-      const limited = /rate limit|429|quota/i.test(dbg.lastErr);
+      // A used-up daily quota will not clear in a minute, so it is reported instead of retried.
+      const limited = e.code !== "DAILY_QUOTA" && /rate limit|429|quota/i.test(dbg.lastErr);
       for (const p of chosen) {
         if (p.status !== "sending") continue;
         if (limited) {
