@@ -423,14 +423,27 @@ async function translate(url, dataUrl, panels, series) {
   let prompt = buildPrompt(lang, cfg.notes, cfg.corrections, glossary);
   // Fully local mode: the vision model only reads. The translation model does the English afterwards,
   // so the reader is told to copy the Korean into the translation field and spend its effort on accuracy.
-  if (localReader && cfg.translator === "ollama" && cfg.ollamaTranslator) {
+  let size = null;
+  if (localReader) {
+    // Local vision models report boxes in pixels of the image they see, so the size is needed.
+    try {
+      const bmp = await createImageBitmap(await (await fetch("data:" + img.mime + ";base64," + img.data)).blob());
+      size = { w: bmp.width, h: bmp.height };
+      bmp.close();
+    } catch (e) {
+      size = { w: 760, h: 1000 };
+    }
+    const alsoTranslate = !(cfg.translator === "ollama" && cfg.ollamaTranslator);
     prompt =
-      "Read every piece of Korean text in this image: speech bubbles, narration boxes and sound effects. " +
-      "For each one give box_2d as [ymin, xmin, ymax, xmax] on a 0 to 1000 scale, and copy the Korean exactly into both original and translation. " +
-      "Do not translate. Keep line breaks as spaces. Skip logos and watermarks. Also give bg and fg as hex colors for the bubble background and the text.";
+      "This image is " + size.w + " pixels wide and " + size.h + " pixels tall. Find every piece of Korean text in it: speech bubbles, narration boxes and sound effects. " +
+      "For each one give bbox_2d as [x1, y1, x2, y2] in pixels, the tight box around the whole bubble's text, and copy the Korean exactly into original. " +
+      (alsoTranslate
+        ? "Translate it into " + lang + " in translation. " + contextBlock(cfg.notes, glossary) + " "
+        : "Copy the same Korean into translation, which is translated later. ") +
+      "Keep line breaks as spaces. Skip logos and watermarks. Give bg and fg as hex colors for the bubble background and the text.";
   }
   const read = localReader
-    ? await Ollama.read(cfg.ollamaUrl, cfg.ollamaReader, img.data, prompt)
+    ? await Ollama.read(cfg.ollamaUrl, cfg.ollamaReader, img.data, prompt, size)
     : await callGemini(apiKey, model, img.mime, img.data, prompt);
   let bubbles = read.bubbles;
   const terms = cleanTerms(read.terms);

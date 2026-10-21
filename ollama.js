@@ -88,13 +88,13 @@
         items: {
           type: "object",
           properties: {
-            box_2d: { type: "array", items: { type: "integer" } },
+            bbox_2d: { type: "array", items: { type: "integer" } },
             original: { type: "string" },
             translation: { type: "string" },
             bg: { type: "string" },
             fg: { type: "string" }
           },
-          required: ["box_2d", "original", "translation"]
+          required: ["bbox_2d", "original", "translation"]
         }
       },
       terms: {
@@ -110,7 +110,22 @@
   };
 
   // The local vision model finds the bubbles and translates them in one request.
-  async function read(rawUrl, model, base64, prompt) {
+  // Local vision models (Qwen-VL in particular) answer with pixel boxes as [x1, y1, x2, y2] on the image
+  // they were shown, not with Gemini's 0 to 1000 [y1, x1, y2, x2]. They also see the image rounded to
+  // a multiple of 28 pixels. This turns their boxes into the extension's own scale.
+  function toPageScale(box, w, h) {
+    if (!Array.isArray(box) || box.length !== 4) return null;
+    const n = box.map(Number);
+    if (n.some((v) => Number.isNaN(v))) return null;
+    const rw = Math.max(28, Math.round(w / 28) * 28);
+    const rh = Math.max(28, Math.round(h / 28) * 28);
+    const [x1, y1, x2, y2] = n;
+    const c = (v) => Math.max(0, Math.min(1000, Math.round(v)));
+    const out = [c((Math.min(y1, y2) / rh) * 1000), c((Math.min(x1, x2) / rw) * 1000), c((Math.max(y1, y2) / rh) * 1000), c((Math.max(x1, x2) / rw) * 1000)];
+    return out[2] > out[0] && out[3] > out[1] ? out : null;
+  }
+
+  async function read(rawUrl, model, base64, prompt, size) {
     const content = await chat(baseUrl(rawUrl), model, [{ role: "user", content: prompt, images: [base64] }], READER_FORMAT);
     let parsed;
     try {
@@ -120,7 +135,14 @@
     }
     const bubbles = Array.isArray(parsed) ? parsed : parsed && parsed.bubbles;
     if (!Array.isArray(bubbles)) throw new Error("The local model's reply had no bubbles in it.");
-    return { bubbles, terms: parsed && parsed.terms };
+    const fixed = [];
+    for (const b of bubbles) {
+      if (!b || typeof b !== "object") continue;
+      const box = size ? toPageScale(b.bbox_2d || b.box_2d, size.w, size.h) : b.box_2d;
+      if (!box) continue;
+      fixed.push(Object.assign({}, b, { box_2d: box }));
+    }
+    return { bubbles: fixed, terms: parsed && parsed.terms };
   }
 
   const HANGUL = /[ᄀ-ᇿ㄰-㆏가-힣]/;
