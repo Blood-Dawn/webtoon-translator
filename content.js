@@ -15,7 +15,7 @@
   const MAX_GLOSSARY = 500;
   const MAX_PENDING = 100;
   const MAX_CHAPTERS_TRACKED = 30;
-  const KT = (window.KT = { ui: null, settings: { batchSeconds: 10 }, corrections: {}, notes: "", glossary: [], editStats: {} });
+  const KT = (window.KT = { ui: null, settings: { batchSeconds: 10 }, corrections: {}, notes: "", glossary: [], editStats: {}, MOVE_LIMIT: 3000 });
   const settings = KT.settings;
 
   const state = {
@@ -252,10 +252,14 @@
     let [y1, x1, y2, x2] = b.box_2d.map(Number);
     if ([y1, x1, y2, x2].some((n) => Number.isNaN(n))) return null;
     const pad = 6;
-    y1 = Math.max(0, y1 - pad);
-    x1 = Math.max(0, x1 - pad);
-    y2 = Math.min(1000, y2 + pad);
-    x2 = Math.min(1000, x2 + pad);
+    // Padding stops at the panel edge for boxes inside the panel. A box the reader moved outside the
+    // panel keeps its position, so it can sit over the neighbouring panel.
+    const padLo = (v) => (v < 0 ? v : Math.max(0, v - pad));
+    const padHi = (v) => (v > 1000 ? v : Math.min(1000, v + pad));
+    y1 = padLo(y1);
+    x1 = padLo(x1);
+    y2 = padHi(y2);
+    x2 = padHi(x2);
     if (y2 <= y1 || x2 <= x1) return null;
     return [y1, x1, y2, x2];
   }
@@ -385,13 +389,14 @@
           const [y1, x1, y2, x2] = start;
           const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
           if (resizing) {
-            b.box_2d = [y1, x1, Math.round(clamp(y2 + uy, y1 + 25, 1000)), Math.round(clamp(x2 + ux, x1 + 40, 1000))];
+            b.box_2d = [y1, x1, Math.round(clamp(y2 + uy, y1 + 25, 1000 + KT.MOVE_LIMIT)), Math.round(clamp(x2 + ux, x1 + 40, 1000 + KT.MOVE_LIMIT))];
             KT.relayout(o, it);
           } else {
             const h = y2 - y1;
             const w = x2 - x1;
-            const ny = clamp(y1 + uy, 0, 1000 - h);
-            const nx = clamp(x1 + ux, 0, 1000 - w);
+            // No panel edge limit: the box can go anywhere within a few panel heights of its own panel.
+            const ny = clamp(y1 + uy, -KT.MOVE_LIMIT, 1000 + KT.MOVE_LIMIT - h);
+            const nx = clamp(x1 + ux, -KT.MOVE_LIMIT, 1000 + KT.MOVE_LIMIT - w);
             b.box_2d = [Math.round(ny), Math.round(nx), Math.round(ny + h), Math.round(nx + w)];
             applyGeometry(it);
           }

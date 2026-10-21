@@ -532,10 +532,10 @@
     const hh = ((y2 - y1) / 2) * f;
     const hw = ((x2 - x1) / 2) * f;
     ctx.b.box_2d = [
-      clamp(Math.round(cy - hh), 0, 1000),
-      clamp(Math.round(cx - hw), 0, 1000),
-      clamp(Math.round(cy + hh), 0, 1000),
-      clamp(Math.round(cx + hw), 0, 1000)
+      clamp(Math.round(cy - hh), -KT.MOVE_LIMIT, 1000 + KT.MOVE_LIMIT),
+      clamp(Math.round(cx - hw), -KT.MOVE_LIMIT, 1000 + KT.MOVE_LIMIT),
+      clamp(Math.round(cy + hh), -KT.MOVE_LIMIT, 1000 + KT.MOVE_LIMIT),
+      clamp(Math.round(cx + hw), -KT.MOVE_LIMIT, 1000 + KT.MOVE_LIMIT)
     ];
     KT.relayout(ctx.o, ctx.it);
   }
@@ -544,8 +544,8 @@
     const [y1, x1, y2, x2] = ctx.b.box_2d.map(Number);
     const h = y2 - y1;
     const w = x2 - x1;
-    const ny = clamp(y1 + dy, 0, 1000 - h);
-    const nx = clamp(x1 + dx, 0, 1000 - w);
+    const ny = clamp(y1 + dy, -KT.MOVE_LIMIT, 1000 + KT.MOVE_LIMIT - h);
+    const nx = clamp(x1 + dx, -KT.MOVE_LIMIT, 1000 + KT.MOVE_LIMIT - w);
     ctx.b.box_2d = [Math.round(ny), Math.round(nx), Math.round(ny + h), Math.round(nx + w)];
     KT.relayout(ctx.o, ctx.it);
     position(ctx.box);

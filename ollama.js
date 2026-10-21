@@ -123,6 +123,9 @@
     return { bubbles, terms: parsed && parsed.terms };
   }
 
+  const HANGUL = /[ᄀ-ᇿ㄰-㆏가-힣]/;
+  const CHATTER = /(provide|share|send|paste|give me)\b[^.\n]{0,40}\b(korean|text)|i (need|will|can) (the|do|help|translate)|absolutely[.!]|korean text you/i;
+
   // Translation only, one line per request, so a translation model sees plain Korean text.
   async function translateOne(base, model, text, lang, context) {
     const prompt =
@@ -141,14 +144,18 @@
     let failed = 0;
     for (let i = 0; i < lines.length; i++) {
       const text = String(lines[i] || "").trim();
-      if (!text) {
+      // Sound effects, symbols and numbers have no Korean words in them. A chat model asked to translate
+      // those tends to answer with a request for text, so they keep the reader's wording.
+      if (!text || !HANGUL.test(text)) {
         out.push(fallback[i]);
         continue;
       }
       try {
         const t = await translateOne(base, model, text, lang, context);
-        out.push(t || fallback[i]);
-        if (!t) failed++;
+        // A reply that talks to the reader instead of translating is thrown away.
+        const chatter = CHATTER.test(t);
+        out.push(t && !chatter ? t : fallback[i]);
+        if (!t || chatter) failed++;
       } catch (e) {
         // A connection or model problem will hit every line, so stop and report it.
         if (i === 0) throw e;

@@ -420,7 +420,15 @@ async function translate(url, dataUrl, panels, series) {
   }
 
   const glossary = pickGlossary(cfg.glossary, String(series || "").slice(0, 80));
-  const prompt = buildPrompt(lang, cfg.notes, cfg.corrections, glossary);
+  let prompt = buildPrompt(lang, cfg.notes, cfg.corrections, glossary);
+  // Fully local mode: the vision model only reads. The translation model does the English afterwards,
+  // so the reader is told to copy the Korean into the translation field and spend its effort on accuracy.
+  if (localReader && cfg.translator === "ollama" && cfg.ollamaTranslator) {
+    prompt =
+      "Read every piece of Korean text in this image: speech bubbles, narration boxes and sound effects. " +
+      "For each one give box_2d as [ymin, xmin, ymax, xmax] on a 0 to 1000 scale, and copy the Korean exactly into both original and translation. " +
+      "Do not translate. Keep line breaks as spaces. Skip logos and watermarks. Also give bg and fg as hex colors for the bubble background and the text.";
+  }
   const read = localReader
     ? await Ollama.read(cfg.ollamaUrl, cfg.ollamaReader, img.data, prompt)
     : await callGemini(apiKey, model, img.mime, img.data, prompt);
