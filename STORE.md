@@ -17,6 +17,9 @@ Read Korean webtoons on Kakao in English. Turn translation on and scroll. The ex
 * Save a corrected line once and it is reused whenever the same Korean line appears again.
 * Add series notes, such as "Han Seo-jin is a woman", so names and pronouns stay right.
 * Translated panels are cached, so scrolling back never pays twice.
+* Bubble looks (speech, thought, shout, narration, sound effect), colors and outlines, undo and redo, and keyboard shortcuts for proofreading a whole chapter.
+* Find and replace across a chapter, and a translation memory that keeps names and phrasing consistent.
+* Optional local models through Ollama or Chrome's built-in translator, so a translation can stay on your computer.
 * Back up your settings and fixes to a file.
 
 Requires your own Gemini API key from Google AI Studio. AI translation can make mistakes, and the editor is there to fix them. Not affiliated with Kakao or Google.

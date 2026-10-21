@@ -73,6 +73,7 @@
     <button data-tab="notes">Notes</button>
     <button data-tab="glossary">Glossary</button>
     <button data-tab="fixes">Fixes</button>
+    <button data-tab="find">Find</button>
     <button data-tab="images">Images</button>
   </div>
 
@@ -90,6 +91,10 @@
     <textarea id="notes" style="min-height:170px" placeholder="Examples:&#10;The rookie agent with the prosthetic leg is a woman (she/her).&#10;Gwajang-nim = Section Chief.&#10;Keep honorifics out of the English."></textarea>
     <div class="row"><button class="b primary" id="savenotes">Save notes</button><span id="notesmsg" class="hint"></span></div>
     <div class="hint">This is the best way to stop wrong genders. Name the character and say he or she. It applies to panels translated from now on. Clear the cache to redo panels you already have.</div>
+    <label for="summary">Story so far (optional, this series)</label>
+    <textarea id="summary" style="min-height:90px" placeholder="A few sentences on the plot so far. It helps the model pick the right tone and meaning."></textarea>
+    <div class="row"><button class="b primary" id="savesummary">Save</button><button class="b" id="makesummary">Update from this chapter</button><span id="summsg" class="hint"></span></div>
+    <div class="hint">Update reads the English lines on this page and asks a model to fold them into the summary. It uses your local model if one is set, otherwise Gemini. Check what it wrote before relying on it.</div>
   </div>
 
   <div class="pane" data-pane="glossary">
@@ -111,6 +116,19 @@
     <div class="hint" id="fixcount"></div>
     <div id="fixlist"></div>
     <div class="hint">When one of these Korean lines comes up again, your wording is used instead of Gemini's.</div>
+  </div>
+
+  <div class="pane" data-pane="find">
+    <label for="fq">Find in this chapter's English</label>
+    <input type="text" id="fq" placeholder="Text to find">
+    <label for="fr">Replace with</label>
+    <input type="text" id="fr" placeholder="Replacement">
+    <label class="chk"><input type="checkbox" id="fcase"> Match case</label>
+    <label class="chk"><input type="checkbox" id="fword"> Whole word</label>
+    <div class="row"><button class="b primary" id="fgo">Find</button><button class="b" id="freplace">Replace all</button></div>
+    <div class="hint" id="fmsg"></div>
+    <div id="flist"></div>
+    <div class="hint">Replace all changes every matching bubble on the page and saves them. Open a bubble and press Reset text to go back to the original wording.</div>
   </div>
 
   <div class="pane" data-pane="images">
@@ -135,7 +153,22 @@
     <span class="lbl" style="margin-left:8px">or drag the bubble</span>
   </div>
   <div class="row">
+    <span class="lbl">Look</span>
+    <select id="preset"></select>
+    <span class="lbl" title="Fill color">Fill</span><input type="color" id="bgc" style="width:34px;height:26px;padding:0;border:0;background:none">
+    <label class="chk" style="margin:0"><input type="checkbox" id="nofill"> none</label>
+  </div>
+  <div class="row">
+    <span class="lbl">Text</span><input type="color" id="fgc" style="width:34px;height:26px;padding:0;border:0;background:none">
+    <label class="chk" style="margin:0 0 0 8px"><input type="checkbox" id="olon"> Outline</label>
+    <input type="color" id="olc" value="#ffffff" style="width:34px;height:26px;padding:0;border:0;background:none">
+  </div>
+  <div class="row">
     <button class="b" id="fem">Make female</button><button class="b" id="mal">Make male</button>
+  </div>
+  <div class="row">
+    <button class="b" id="undo" title="Ctrl+Z">Undo</button><button class="b" id="redo" title="Ctrl+Y">Redo</button>
+    <button class="b" id="prev" title="Alt+Left">&#9664; Prev</button><button class="b" id="next" title="Alt+Right, or Ctrl+Enter to save and go on">Next &#9654;</button>
   </div>
   <label class="chk"><input type="checkbox" id="remember" checked> Remember this wording for this Korean line</label>
   <div class="row">
@@ -158,6 +191,7 @@
   function syncPanel() {
     $("secs").value = KT.settings.batchSeconds || 10;
     $("notes").value = KT.notes || "";
+    $("summary").value = KT.summary || "";
     $("toggle").textContent = KT.state.enabled ? "Turn translating off" : "Turn translating on";
     $("stats").textContent = KT.statsText();
   }
@@ -257,6 +291,90 @@
       list.appendChild(row);
     });
   }
+
+  // ---------- find and replace in the chapter ----------
+  function findRegex() {
+    const q = $("fq").value;
+    if (!q) return null;
+    let s = q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if ($("fword").checked) s = "\\b" + s + "\\b";
+    return new RegExp(s, $("fcase").checked ? "g" : "gi");
+  }
+
+  function doFind() {
+    const re = findRegex();
+    const list = $("flist");
+    list.textContent = "";
+    if (!re) {
+      $("fmsg").textContent = "Type something to find.";
+      return [];
+    }
+    const hits = KT.allItems().filter((c) => {
+      re.lastIndex = 0;
+      return re.test(c.b.translation);
+    });
+    $("fmsg").textContent = hits.length ? hits.length + " bubble" + (hits.length === 1 ? "" : "s") + " match." : "No matches on the page so far.";
+    hits.slice(0, 40).forEach((c) => {
+      const row = document.createElement("button");
+      row.className = "b";
+      row.style.cssText = "display:block;width:100%;text-align:left;margin:3px 0;white-space:normal";
+      row.textContent = c.b.translation.length > 90 ? c.b.translation.slice(0, 90) + "..." : c.b.translation;
+      row.addEventListener("click", () => reveal(c));
+      list.appendChild(row);
+    });
+    return hits;
+  }
+
+  $("fgo").addEventListener("click", doFind);
+  $("fq").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") doFind();
+  });
+  $("freplace").addEventListener("click", async () => {
+    const re = findRegex();
+    if (!re) return doFind();
+    const rep = $("fr").value;
+    const changedPanels = new Set();
+    let n = 0;
+    for (const c of KT.allItems()) {
+      re.lastIndex = 0;
+      if (!re.test(c.b.translation)) continue;
+      re.lastIndex = 0;
+      if (c.b.geminiText === undefined) c.b.geminiText = c.b.translation;
+      c.b.translation = c.b.translation.replace(re, () => rep);
+      changedPanels.add(c.panel);
+      n++;
+    }
+    for (const p of changedPanels) {
+      await KT.commitPanel(p);
+      KT.rerender(p);
+    }
+    $("flist").textContent = "";
+    $("fmsg").textContent = n ? "Changed " + n + " bubble" + (n === 1 ? "" : "s") + "." : "No matches on the page so far.";
+  });
+
+  // ---------- story so far ----------
+  $("savesummary").addEventListener("click", async () => {
+    await KT.saveSummary($("summary").value);
+    $("summsg").textContent = "Saved";
+    setTimeout(() => ($("summsg").textContent = ""), 2000);
+  });
+  $("makesummary").addEventListener("click", async () => {
+    const lines = KT.allItems().map((c) => c.b.translation).filter(Boolean);
+    if (!lines.length) {
+      $("summsg").textContent = "Nothing translated on this page yet.";
+      return;
+    }
+    $("summsg").textContent = "Working...";
+    try {
+      const r = await chrome.runtime.sendMessage({ type: "summarize", previous: $("summary").value, lines: lines.slice(0, 200), series: KT.seriesKey() });
+      if (!r || !r.ok) throw new Error((r && r.error) || "No answer");
+      $("summary").value = r.summary;
+      await KT.saveSummary(r.summary);
+      $("summsg").textContent = "Updated. Please read it over.";
+    } catch (e) {
+      $("summsg").textContent = String(e.message || e).slice(0, 140);
+    }
+  });
 
   // ---------- glossary ----------
   function mkBtn(label, cls, fn) {
@@ -523,6 +641,7 @@
   function setFontPx(px) {
     ctx.b.fs = clamp(px, 6, 200) / (ctx.o.width > 0 ? ctx.o.width : ctx.o.img.clientWidth);
     KT.refit(ctx.o, ctx.it);
+    record();
   }
 
   function scaleBox(f) {
@@ -539,6 +658,7 @@
       clamp(Math.round(cx + hw), -KT.MOVE_LIMIT, 1000 + KT.MOVE_LIMIT)
     ];
     KT.relayout(ctx.o, ctx.it);
+    record();
   }
 
   function nudge(dy, dx) {
@@ -551,6 +671,7 @@
     ctx.b.box_2d = [Math.round(ny), Math.round(nx), Math.round(ny + h), Math.round(nx + w)];
     KT.relayout(ctx.o, ctx.it);
     position(ctx.box);
+    record();
   }
 
   function openEditor(c) {
@@ -562,16 +683,161 @@
     c.it.editing = true;
     if (c.it.grip) c.it.grip.style.opacity = "1";
     ctx = Object.assign({}, c, {
-      backup: { translation: c.b.translation, fs: c.b.fs, box_2d: c.b.box_2d.slice() },
+      backup: { translation: c.b.translation, fs: c.b.fs, box_2d: c.b.box_2d.slice(), preset: c.b.preset, bg: c.b.bg, fg: c.b.fg, ol: c.b.ol, shaped: c.b.shaped },
       peek: false
     });
     $("orig").textContent = c.b.original || "(no Korean text was recorded for this bubble)";
     $("txt").value = c.b.translation;
     $("peek").textContent = "Show Korean";
     editor.classList.add("open");
+    hist = [];
+    hi = -1;
+    record();
     position(c.box);
     $("txt").focus();
   }
+
+  // ---------- undo and redo, look controls ----------
+  let hist = [];
+  let hi = -1;
+  let typeTimer = null;
+  const hex = (v, fallback) => (typeof v === "string" && /^#[0-9a-f]{6}$/i.test(v) ? v : fallback);
+
+  function capture() {
+    const b = ctx.b;
+    return { text: $("txt").value, fs: b.fs, box: b.box_2d.slice(), preset: b.preset, bg: b.bg, fg: b.fg, ol: b.ol };
+  }
+
+  function syncLook() {
+    if (!ctx) return;
+    const P = KT.PRESETS[ctx.b.preset] || KT.PRESETS.speech;
+    $("preset").value = KT.PRESETS[ctx.b.preset] ? ctx.b.preset : "speech";
+    const noFill = ctx.b.bg === "transparent";
+    $("nofill").checked = noFill;
+    $("bgc").value = hex(noFill ? "" : ctx.b.bg, hex(P.bg, "#ffffff"));
+    $("fgc").value = hex(ctx.b.fg, hex(P.fg, "#111111"));
+    const ol = hex(ctx.b.ol, "");
+    $("olon").checked = !!ol;
+    if (ol) $("olc").value = ol;
+    $("undo").disabled = hi <= 0;
+    $("redo").disabled = hi >= hist.length - 1;
+  }
+
+  function record() {
+    if (!ctx) return;
+    clearTimeout(typeTimer);
+    const s = capture();
+    if (hi >= 0 && JSON.stringify(hist[hi]) === JSON.stringify(s)) {
+      syncLook();
+      return;
+    }
+    hist = hist.slice(0, hi + 1);
+    hist.push(s);
+    if (hist.length > 60) hist.shift();
+    hi = hist.length - 1;
+    syncLook();
+  }
+
+  function applyState(s) {
+    const b = ctx.b;
+    for (const k of ["fs", "preset", "bg", "fg", "ol"]) {
+      if (s[k] === undefined) delete b[k];
+      else b[k] = s[k];
+    }
+    b.box_2d = s.box.slice();
+    b.shaped = true;
+    $("txt").value = s.text;
+    ctx.span.textContent = s.text;
+    KT.relayout(ctx.o, ctx.it);
+    KT.restyle(ctx.o, ctx.it);
+    syncLook();
+    position(ctx.box);
+  }
+
+  function undo() {
+    if (!ctx) return;
+    clearTimeout(typeTimer);
+    record();
+    if (hi <= 0) return;
+    hi--;
+    applyState(hist[hi]);
+  }
+
+  function redo() {
+    if (!ctx || hi >= hist.length - 1) return;
+    hi++;
+    applyState(hist[hi]);
+  }
+
+  function applyLook(change) {
+    if (!ctx) return;
+    change(ctx.b);
+    KT.restyle(ctx.o, ctx.it);
+    record();
+  }
+
+  Object.entries(KT.PRESETS).forEach(([k, P]) => {
+    const o = document.createElement("option");
+    o.value = k;
+    o.textContent = P.label;
+    $("preset").appendChild(o);
+  });
+  $("preset").addEventListener("change", () =>
+    applyLook((b) => {
+      const P = KT.PRESETS[$("preset").value];
+      b.preset = $("preset").value;
+      b.bg = P.bg;
+      b.fg = P.fg;
+      if (P.ol) b.ol = P.ol;
+      else delete b.ol;
+    })
+  );
+  $("bgc").addEventListener("input", () => {
+    $("nofill").checked = false;
+    applyLook((b) => (b.bg = $("bgc").value));
+  });
+  $("nofill").addEventListener("change", () => applyLook((b) => (b.bg = $("nofill").checked ? "transparent" : $("bgc").value)));
+  $("fgc").addEventListener("input", () => applyLook((b) => (b.fg = $("fgc").value)));
+  $("olon").addEventListener("change", () =>
+    applyLook((b) => {
+      if ($("olon").checked) b.ol = $("olc").value;
+      else delete b.ol;
+    })
+  );
+  $("olc").addEventListener("input", () => {
+    $("olon").checked = true;
+    applyLook((b) => (b.ol = $("olc").value));
+  });
+  $("undo").addEventListener("click", undo);
+  $("redo").addEventListener("click", redo);
+
+  // Next and previous bubble in reading order. Unchanged bubbles close without being saved again.
+  async function go(dir) {
+    if (!ctx) return;
+    const items = KT.allItems();
+    const n = items.findIndex((x) => x.b === ctx.b) + dir;
+    if (n < 0 || n >= items.length) {
+      KT.toast(dir > 0 ? "That was the last bubble on the page so far." : "That was the first bubble on the page.");
+      return;
+    }
+    const dirty = JSON.stringify(capture()) !== JSON.stringify(hist[0]);
+    if (dirty) {
+      await save();
+      const again = KT.allItems()[n];
+      if (again) reveal(again);
+    } else {
+      const target = items[n];
+      discard(true);
+      reveal(target);
+    }
+  }
+
+  function reveal(c) {
+    c.box.scrollIntoView({ block: "center", behavior: "auto" });
+    setTimeout(() => openEditor(c), 80);
+  }
+  $("next").addEventListener("click", () => go(1));
+  $("prev").addEventListener("click", () => go(-1));
 
   // Throw away unsaved changes and put the bubble back as it was.
   function discard(soft) {
@@ -582,6 +848,10 @@
     if (c.backup.fs === undefined) delete c.b.fs;
     else c.b.fs = c.backup.fs;
     c.b.box_2d = c.backup.box_2d;
+    for (const k of ["preset", "bg", "fg", "ol", "shaped"]) {
+      if (c.backup[k] === undefined) delete c.b[k];
+      else c.b[k] = c.backup[k];
+    }
     c.it.editing = false;
     if (c.it.grip) c.it.grip.style.opacity = "0";
     editor.classList.remove("open");
@@ -589,6 +859,7 @@
       c.span.textContent = c.b.translation;
       c.box.style.opacity = "1";
       KT.relayout(c.o, c.it);
+      KT.restyle(c.o, c.it);
     } else {
       KT.rerender(c.panel);
     }
@@ -616,6 +887,8 @@
     if (!ctx) return;
     ctx.span.textContent = $("txt").value;
     KT.refit(ctx.o, ctx.it);
+    clearTimeout(typeTimer);
+    typeTimer = setTimeout(record, 600);
   });
   $("fplus").addEventListener("click", () => ctx && setFontPx(liveSize() * 1.1));
   $("fminus").addEventListener("click", () => ctx && setFontPx(liveSize() / 1.1));
@@ -623,6 +896,7 @@
     if (!ctx) return;
     delete ctx.b.fs;
     KT.refit(ctx.o, ctx.it);
+    record();
   });
   $("bplus").addEventListener("click", () => ctx && scaleBox(1.08));
   $("bminus").addEventListener("click", () => ctx && scaleBox(1 / 1.08));
@@ -649,6 +923,29 @@
   $("save").addEventListener("click", save);
   $("close").addEventListener("click", discard);
 
+  // Keyboard flow: Ctrl+Z and Ctrl+Y undo and redo, Ctrl+Enter saves and goes to the next bubble,
+  // Alt+Left and Alt+Right move between bubbles.
+  editor.addEventListener("keydown", (e) => {
+    if (!ctx) return;
+    const k = e.key.toLowerCase();
+    if ((e.ctrlKey || e.metaKey) && k === "z" && !e.shiftKey) {
+      e.preventDefault();
+      undo();
+    } else if ((e.ctrlKey || e.metaKey) && (k === "y" || (k === "z" && e.shiftKey))) {
+      e.preventDefault();
+      redo();
+    } else if ((e.ctrlKey || e.metaKey) && k === "enter") {
+      e.preventDefault();
+      go(1);
+    } else if (e.altKey && k === "arrowright") {
+      e.preventDefault();
+      go(1);
+    } else if (e.altKey && k === "arrowleft") {
+      e.preventDefault();
+      go(-1);
+    }
+  });
+
   // Keep keystrokes inside the editor away from the site's own shortcuts.
   ["keydown", "keyup", "keypress"].forEach((ev) => editor.addEventListener(ev, (e) => e.stopPropagation()));
   window.addEventListener(
@@ -663,6 +960,7 @@
 
   KT.ui = {
     openEditor,
+    record,
     reposition() {
       if (ctx) position(ctx.box);
     }

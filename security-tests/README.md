@@ -37,3 +37,7 @@ bash run.sh
 To test a different copy of the extension, pass its folder: `bash run.sh /path/to/extension`.
 
 Never put a real API key into this test. It uses a made-up key on purpose.
+
+## Editor test
+
+`editor-test.js` drives the on-page editor in a real browser: dragging a bubble past its panel edge, bubble looks, undo and redo, next and previous, Ctrl+Enter, and find and replace. It runs against a copy of the extension whose interface root is made inspectable, since a test cannot look inside a closed shadow root. `run.sh` runs all three suites.

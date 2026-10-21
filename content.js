@@ -48,6 +48,50 @@
   const norm = (s) => String(s || "").replace(/\s+/g, " ").trim();
   KT.norm = norm;
 
+  // Bubble looks. Choosing one in the editor fills in the colors, which can then be changed one by one.
+  const PRESETS = {
+    speech: { label: "Speech", bg: "#ffffff", fg: "#111111", ol: "", radius: "8px", italic: false, upper: false, weight: "700" },
+    thought: { label: "Thought", bg: "#ffffff", fg: "#2a2a2a", ol: "", radius: "28px", italic: true, upper: false, weight: "600" },
+    shout: { label: "Shout", bg: "#ffffff", fg: "#111111", ol: "", radius: "4px", italic: false, upper: true, weight: "900" },
+    narration: { label: "Narration", bg: "#fff4c2", fg: "#222222", ol: "", radius: "2px", italic: false, upper: false, weight: "600" },
+    sfx: { label: "Sound effect", bg: "transparent", fg: "#111111", ol: "#ffffff", radius: "0", italic: true, upper: true, weight: "900" }
+  };
+  KT.PRESETS = PRESETS;
+
+  function styleBox(it) {
+    const { b, box, span } = it;
+    const P = PRESETS[b.preset] || PRESETS.speech;
+    box.style.background = b.bg === "transparent" ? "transparent" : safeColor(b.bg, P.bg === "transparent" ? "#ffffff" : P.bg);
+    box.style.color = safeColor(b.fg, P.fg);
+    box.style.borderRadius = P.radius;
+    box.style.fontWeight = P.weight;
+    box.style.fontStyle = P.italic ? "italic" : "normal";
+    span.style.textTransform = P.upper ? "uppercase" : "none";
+    const ol = safeColor(b.ol, "");
+    span.style.textShadow = ol
+      ? [[-1.5, 0], [1.5, 0], [0, -1.5], [0, 1.5], [-1, -1], [1, 1], [-1, 1], [1, -1]].map(([x, y]) => x + "px " + y + "px 0 " + ol).join(",")
+      : "none";
+  }
+  KT.restyle = (o, it) => {
+    styleBox(it);
+    fitItem(o, it);
+  };
+
+  // Every bubble on the page in reading order, for next and previous, and for search and replace.
+  KT.allItems = () => {
+    const out = [];
+    for (const o of state.overlays.values()) {
+      if (!o.img.isConnected) continue;
+      const top = o.img.getBoundingClientRect().top + window.scrollY;
+      for (const it of o.items) {
+        const g = geometry(it.b) || [0, 0];
+        out.push({ y: top + (g[0] / 1000) * o.img.clientHeight, x: g[1], c: { panel: o.panel, b: it.b, box: it.box, span: it.span, o, it } });
+      }
+    }
+    out.sort((a, b) => a.y - b.y || a.x - b.x);
+    return out.map((e) => e.c);
+  };
+
   // Panels are cached by a fingerprint of their pixels, so the same panel is never
   // sent twice, even after a reload (blob: URLs change on every page load).
   function hashStr(s) {
@@ -176,6 +220,23 @@
     );
   };
 
+  // A short "story so far" per series, written by the reader or drafted by a model, sent with every request.
+  KT.summaries = {};
+  Object.defineProperty(KT, "summary", { get: () => KT.summaries[KT.seriesKey()] || "" });
+  KT.saveSummary = async (text) => {
+    const k = KT.seriesKey();
+    const t = String(text || "").trim().slice(0, 1500);
+    if (t) KT.summaries[k] = t;
+    else delete KT.summaries[k];
+    const keys = Object.keys(KT.summaries);
+    if (keys.length > 40) delete KT.summaries[keys[0]];
+    try {
+      await chrome.storage.local.set({ summaries: KT.summaries });
+    } catch (e) {
+      /* ignore */
+    }
+  };
+
   KT.commitPanel = async (p) => {
     if (!p || !p.key) return;
     KT.noteEdit();
@@ -286,12 +347,20 @@
       span.style.fontSize = Math.max(6, b.fs * w) + "px";
       return;
     }
-    let size = Math.min(maxH * 0.8, 34);
-    span.style.fontSize = size + "px";
-    while (size > 7 && (span.offsetHeight > maxH || span.scrollWidth > maxW)) {
-      size -= 1;
-      span.style.fontSize = size + "px";
+    // Binary search for the largest font that still fits, so a box that is resized always refills well.
+    const fits = (s) => {
+      span.style.fontSize = s + "px";
+      return span.offsetHeight <= maxH && span.scrollWidth <= maxW;
+    };
+    let hi = Math.max(8, Math.min(maxH * 0.9, Math.max(34, (o.width > 0 ? o.width : o.img.clientWidth) * 0.07)));
+    let lo = 7;
+    if (fits(hi)) return;
+    while (hi - lo > 0.5) {
+      const mid = (hi + lo) / 2;
+      if (fits(mid)) lo = mid;
+      else hi = mid;
     }
+    span.style.fontSize = lo + "px";
   }
 
   // Readers often return a tall, narrow box around a bubble's text. English wraps badly in that shape,
@@ -387,6 +456,7 @@
       span.textContent = b.translation;
       box.title = (b.original || "") + "\nClick to edit, drag to move";
       box.appendChild(span);
+      styleBox({ b, box, span });
       const grip = document.createElement("div");
       Object.assign(grip.style, {
         position: "absolute",
@@ -454,6 +524,7 @@
           window.removeEventListener("pointermove", move, true);
           window.removeEventListener("pointerup", up, true);
           if (began) {
+            if (KT.ui && KT.ui.record) KT.ui.record();
             if (KT.ui && KT.ui.reposition) KT.ui.reposition();
             setTimeout(() => (dragged = false), 0);
           }
@@ -685,6 +756,33 @@
     return out;
   }
 
+  // Optional: Chrome's own on-device translator (Chrome 138 or newer) rewrites each Korean line.
+  // It runs inside the browser and sends nothing anywhere. If it is missing or refuses, the reader's wording stays.
+  let chromeTr = null;
+  let chromeWarned = false;
+  async function chromeTranslate(boxes) {
+    try {
+      if (typeof Translator === "undefined") throw new Error("this Chrome has no built-in translator.");
+      if (!chromeTr) {
+        const pair = { sourceLanguage: "ko", targetLanguage: "en" };
+        if ((await Translator.availability(pair)) === "unavailable") throw new Error("Chrome cannot translate Korean here.");
+        chromeTr = await Translator.create(pair);
+      }
+      for (const b of boxes) {
+        if (!/[가-힣]/.test(b.original || "")) continue;
+        try {
+          const t = await chromeTr.translate(b.original);
+          if (t && t.trim()) b.translation = t.trim();
+        } catch (e) {
+          /* keep the reader's wording for this line */
+        }
+      }
+    } catch (e) {
+      if (!chromeWarned) toast("Chrome's built-in translator was not used: " + (e.message || e));
+      chromeWarned = true;
+    }
+  }
+
   async function flush() {
     if (!state.enabled || state.sending) return;
     const chosen = pickBatch();
@@ -714,6 +812,7 @@
       dbg.batches++;
       dbg.panelsSent += chosen.length;
       if (res.warning) toast(res.warning);
+      if (settings.translator === "chrome") await chromeTranslate(res.boxes);
       countUsage(res.boxes);
       learnTerms(res.terms);
       const perPanel = splitBoxes(res.boxes, layout, W, H);
@@ -858,9 +957,11 @@
       if (area !== "local") return;
       if (changes.batchSeconds) settings.batchSeconds = Number(changes.batchSeconds.newValue);
       if (changes.provider) settings.localReader = changes.provider.newValue === "ollama";
+      if (changes.translator) settings.translator = changes.translator.newValue;
       if (changes.notes) KT.notes = changes.notes.newValue || "";
       if (changes.corrections) KT.corrections = changes.corrections.newValue || {};
       if (changes.glossary) KT.glossary = changes.glossary.newValue || [];
+      if (changes.summaries) KT.summaries = changes.summaries.newValue || {};
       if (changes.editStats) KT.editStats = changes.editStats.newValue || {};
     });
   } catch (e) {
@@ -870,8 +971,10 @@
   (async () => {
     let saved = false;
     try {
-      const cfg = await chrome.storage.local.get(["enabled", "batchSeconds", "notes", "corrections", "glossary", "editStats", "provider"]);
+      const cfg = await chrome.storage.local.get(["enabled", "batchSeconds", "notes", "corrections", "glossary", "editStats", "provider", "summaries", "translator"]);
       settings.localReader = cfg.provider === "ollama";
+      settings.translator = cfg.translator;
+      KT.summaries = cfg.summaries && typeof cfg.summaries === "object" ? cfg.summaries : {};
       KT.glossary = Array.isArray(cfg.glossary) ? cfg.glossary : [];
       KT.editStats = cfg.editStats || {};
       saved = !!cfg.enabled;

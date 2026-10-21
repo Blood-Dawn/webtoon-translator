@@ -105,7 +105,10 @@ https
           res.writeHead(429, { "content-type": "application/json" });
           return res.end(quotaBody("GenerateRequestsPerMinutePerProjectPerModel-FreeTier", "1s"));
         }
-        const boxes = [{ box_2d: [100, 100, 300, 600], original: "안녕하세요", translation: "Hello there", bg: "#ffffff", fg: "#111111" }];
+        const boxes = [
+          { box_2d: [100, 100, 300, 600], original: "안녕하세요", translation: "Hello there", bg: "#ffffff", fg: "#111111" },
+          { box_2d: [600, 100, 800, 600], original: "두번째", translation: "Second line", bg: "#ffffff", fg: "#111111" }
+        ];
         const terms = [{ ko: "테스트용어", en: "Test Term", type: "term", gender: "" }];
         res.writeHead(200, { "content-type": "application/json", "access-control-allow-origin": "*" });
         return res.end(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify({ bubbles: boxes, terms }) }] } }] }));

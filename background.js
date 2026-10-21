@@ -1,4 +1,4 @@
-importScripts("secret.js", "ollama.js");
+importScripts("secret.js", "ollama.js", "memory.js");
 
 const DEFAULTS = { model: "gemini-3.8-flash", lang: "English" };
 const MAX_DEBUG_BATCHES = 5;
@@ -169,6 +169,28 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
     return true;
   }
+  if (msg.type === "summarize") {
+    summarize(String(msg.previous || ""), Array.isArray(msg.lines) ? msg.lines.map(String) : [])
+      .then((summary) => sendResponse({ ok: true, summary }))
+      .catch((e) => sendResponse({ ok: false, error: scrub(e.message) }));
+    return true;
+  }
+  if (msg.type === "memoryCount" || msg.type === "memoryClear" || msg.type === "ollamaBatch") {
+    // Only the extension's own settings page may use these.
+    if (!sender.url || !sender.url.startsWith("chrome-extension://" + chrome.runtime.id + "/")) return false;
+    if (msg.type === "memoryCount") {
+      TM.load().then((l) => sendResponse({ ok: true, count: l.length }));
+    } else if (msg.type === "memoryClear") {
+      TM.clear().then((n) => sendResponse({ ok: true, count: n }));
+    } else {
+      const t0 = Date.now();
+      const lines = Array.isArray(msg.lines) ? msg.lines.slice(0, 20).map((l) => String(l).slice(0, 300)) : [];
+      Ollama.translateLines(msg.url, String(msg.model || ""), lines, String(msg.lang || "English"), "", lines.map(() => ""))
+        .then((r) => sendResponse({ ok: true, lines: r.lines, failed: r.failed, ms: Date.now() - t0 }))
+        .catch((e) => sendResponse({ ok: false, error: e.message }));
+    }
+    return true;
+  }
   if (msg.type === "testKey") {
     // Only the extension's own settings page may run this.
     if (!sender.url || !sender.url.startsWith("chrome-extension://" + chrome.runtime.id + "/")) return false;
@@ -243,7 +265,7 @@ function cleanTerms(raw) {
   return out;
 }
 
-function buildPrompt(lang, notes, corrections, glossary) {
+function buildPrompt(lang, notes, corrections, glossary, summary) {
   const lines = [
     "This image is several consecutive sections of a Korean webtoon stacked vertically, separated by thin dark gray bands. Ignore the gray bands. Treat the whole image as one coordinate space.",
     "Find every piece of text a reader is meant to read: speech bubbles, thought bubbles, narration boxes, and clearly legible on-screen text or sound effects.",
@@ -261,6 +283,7 @@ function buildPrompt(lang, notes, corrections, glossary) {
   // Everything above is identical on every request, so Google can reuse it from its cache.
   // The parts below change per series and go last.
   if (notes) lines.push("Notes from the reader about this series. Follow them exactly:\n" + String(notes).slice(0, 4000));
+  if (summary) lines.push("The story so far, for tone and meaning only:\n" + String(summary).slice(0, 1500));
   const chars = glossary.filter((g) => g.type === "character");
   const terms = glossary.filter((g) => g.type !== "character");
   if (chars.length) {
@@ -377,9 +400,10 @@ async function saveBatch(entry) {
 }
 
 // Notes, characters and glossary as plain text for a translation model that is not given the image.
-function contextBlock(notes, glossary) {
+function contextBlock(notes, glossary, summary) {
   const parts = [];
   if (notes) parts.push("Notes about this series. Follow them:\n" + String(notes).slice(0, 2000));
+  if (summary) parts.push("The story so far:\n" + String(summary).slice(0, 1500));
   const chars = glossary.filter((g) => g.type === "character");
   const terms = glossary.filter((g) => g.type !== "character");
   if (chars.length) parts.push("Characters:\n" + chars.map((g) => g.ko + " = " + g.en + (g.gender ? " (" + g.gender + ")" : "")).join("\n"));
@@ -387,11 +411,42 @@ function contextBlock(notes, glossary) {
   return parts.join("\n\n");
 }
 
+// Drafts an updated "story so far" from the English lines on the page. A local model is used when the
+// reader has set one up, otherwise Gemini. The reader edits the result, it is never applied silently.
+async function summarize(previous, lines) {
+  const text = lines.map((l) => l.trim()).filter(Boolean).join("\n").slice(0, 6000);
+  if (!text) throw new Error("There are no translated lines to summarize yet.");
+  const prompt =
+    "You keep a short plot summary of a Korean webtoon so its translators understand the story. Update the summary using the new English lines from the latest pages. " +
+    "Write plain prose under 120 words. Only use what the lines show and do not invent anything. Output only the summary.\n\n" +
+    "Summary so far:\n" + (previous.trim().slice(0, 1500) || "(none yet)") + "\n\nNew lines:\n" + text;
+  const cfg = await chrome.storage.local.get(["provider", "ollamaUrl", "ollamaReader", "translator", "ollamaTranslator", "model"]);
+  if (cfg.translator === "ollama" && cfg.ollamaTranslator) return (await Ollama.ask(cfg.ollamaUrl, cfg.ollamaTranslator, prompt)).slice(0, 1500);
+  if (cfg.provider === "ollama" && cfg.ollamaReader) return (await Ollama.ask(cfg.ollamaUrl, cfg.ollamaReader, prompt)).slice(0, 1500);
+  const key = await Secrets.get("apiKey");
+  if (!key) throw new Error("Add a Gemini key or set up a local model first.");
+  const model = !cfg.model || cfg.model === "gemini-2.5-flash" ? DEFAULTS.model : cfg.model;
+  const r = await fetch("https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(model) + ":generateContent", {
+    method: "POST",
+    headers: { "x-goog-api-key": key, "content-type": "application/json" },
+    body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.2, maxOutputTokens: 400 } })
+  });
+  if (!r.ok) throw new Error(friendlyError(r.status, await r.text()));
+  const j = await r.json();
+  const out = j && j.candidates && j.candidates[0] && j.candidates[0].content && j.candidates[0].content.parts;
+  const s = Array.isArray(out) ? out.map((p) => p.text || "").join("").trim() : "";
+  if (!s) throw new Error("The model gave no summary. Try again.");
+  return s.slice(0, 1500);
+}
+
 async function translate(url, dataUrl, panels, series) {
   const cfg = await chrome.storage.local.get([
     "model", "lang", "notes", "corrections", "keepDebug", "glossary",
-    "provider", "ollamaUrl", "ollamaReader", "translator", "ollamaTranslator"
+    "provider", "ollamaUrl", "ollamaReader", "translator", "ollamaTranslator", "summaries", "useMemory"
   ]);
+  const seriesKey = String(series || "").slice(0, 80);
+  const summary = cfg.summaries && typeof cfg.summaries === "object" ? String(cfg.summaries[seriesKey] || "") : "";
+  const useMemory = cfg.useMemory !== false;
   // The reader finds the bubbles. It is Gemini unless the reader was switched to a local vision model.
   const localReader = cfg.provider === "ollama";
   let apiKey = null;
@@ -420,7 +475,7 @@ async function translate(url, dataUrl, panels, series) {
   }
 
   const glossary = pickGlossary(cfg.glossary, String(series || "").slice(0, 80));
-  let prompt = buildPrompt(lang, cfg.notes, cfg.corrections, glossary);
+  let prompt = buildPrompt(lang, cfg.notes, cfg.corrections, glossary, summary);
   // Fully local mode: the vision model only reads. The translation model does the English afterwards,
   // so the reader is told to copy the Korean into the translation field and spend its effort on accuracy.
   let size = null;
@@ -438,7 +493,7 @@ async function translate(url, dataUrl, panels, series) {
       "This image is " + size.w + " pixels wide and " + size.h + " pixels tall. Find every piece of Korean text in it: speech bubbles, narration boxes and sound effects. " +
       "For each one give bbox_2d as [x1, y1, x2, y2] in pixels, the tight box around the whole bubble's text, and copy the Korean exactly into original. " +
       (alsoTranslate
-        ? "Translate it into " + lang + " in translation. " + contextBlock(cfg.notes, glossary) + " "
+        ? "Translate it into " + lang + " in translation. " + contextBlock(cfg.notes, glossary, summary) + " "
         : "Copy the same Korean into translation, which is translated later. ") +
       "Keep line breaks as spaces. Skip logos and watermarks. Give bg and fg as hex colors for the bubble background and the text.";
   }
@@ -453,13 +508,25 @@ async function translate(url, dataUrl, panels, series) {
   // If it fails, the reader's own translation stays, so a local problem never blanks the page.
   if (cfg.translator === "ollama" && cfg.ollamaTranslator && bubbles.length) {
     try {
+      const norm = (s) => String(s || "").replace(/\s+/g, " ").trim();
+      const fixes = cfg.corrections || {};
+      const tmList = useMemory ? await TM.load() : [];
+      const base = contextBlock(cfg.notes, glossary, summary);
+      // A line the reader already corrected is used as they wrote it. The model sees only the other lines,
+      // each with a few similar earlier lines as examples of the wording to keep.
+      const source = bubbles.map((b) => (Object.prototype.hasOwnProperty.call(fixes, norm(b.original)) ? "" : b.original));
+      const fallback = bubbles.map((b) => (Object.prototype.hasOwnProperty.call(fixes, norm(b.original)) ? fixes[norm(b.original)] : b.translation));
       const r = await Ollama.translateLines(
         cfg.ollamaUrl,
         cfg.ollamaTranslator,
-        bubbles.map((b) => b.original),
+        source,
         lang,
-        contextBlock(cfg.notes, glossary),
-        bubbles.map((b) => b.translation)
+        (ko) => {
+          const ex = useMemory ? TM.find(tmList, fixes, seriesKey, ko, 3) : [];
+          const block = ex.length ? "Earlier lines from this story. Keep the wording consistent with them:\n" + ex.map((e) => e.ko + " => " + e.en).join("\n") : "";
+          return [base, block].filter(Boolean).join("\n\n");
+        },
+        fallback
       );
       bubbles = bubbles.map((b, i) => Object.assign({}, b, { translation: r.lines[i] }));
       if (r.failed) warning = r.failed + " line(s) could not be translated locally and keep the reader's wording.";
@@ -467,6 +534,9 @@ async function translate(url, dataUrl, panels, series) {
       warning = "The local translator did not work, so the reader's own translation is shown. " + e.message;
     }
   }
+
+  // Remember what was said, so later similar lines can reuse the wording. Stays on this computer.
+  if (useMemory && seriesKey) await TM.add(seriesKey, bubbles.map((b) => ({ ko: b.original, en: b.translation })));
 
   // Kept only when the reader turned on "keep debug images", since they are copies of the comic pages.
   if (cfg.keepDebug) saveBatch({ t: Date.now(), model: localReader ? cfg.ollamaReader : model, panels: panels || 1, dataUrl: "data:" + img.mime + ";base64," + img.data, boxes: bubbles });

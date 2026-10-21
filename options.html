@@ -68,8 +68,9 @@
   <select id="translator">
     <option value="same">The reader</option>
     <option value="ollama">A translation model on this computer</option>
+    <option value="chrome">Chrome's built-in translator (experimental)</option>
   </select>
-  <small>With Gemini as the reader, the local model rewrites each line from the Korean text. Gemini still sees the panels.</small>
+  <small>With a model on this computer, it rewrites each line from the Korean text and the reader only finds the bubbles. Chrome's built-in translator needs Chrome 138 or newer and downloads a small language pack the first time. It translates Korean to English only.</small>
 
   <label for="ollamaUrl">Ollama address</label>
   <input id="ollamaUrl" type="text" placeholder="http://localhost:11434">
@@ -83,6 +84,17 @@
   <button id="findModels">Find my models</button>
   <button id="testLocal" style="margin-left:8px">Test local translation</button>
   <div id="localresult"></div>
+  <small>Models that work well for translation include translategemma and Hunyuan-MT (names containing "hunyuan" or "hy-mt" get that model's own prompt style automatically).</small>
+
+  <h2>Quality test</h2>
+  <small>Runs 50 typical webtoon lines through the local translation model above and scores the wording against a human translation (0 to 100), so you can compare models on your own computer. Run it once per model.</small>
+  <button id="runEval">Run quality test</button>
+  <div id="evalprogress"></div>
+  <div id="evalresult"></div>
+
+  <h2>Memory</h2>
+  <label class="check"><input id="useMemory" type="checkbox" checked><span>Translation memory<small>Keeps the Korean lines you have translated, and shows a few similar earlier lines to the local translation model so names and phrasing stay the same. Stored only on this computer.</small></span></label>
+  <button id="clearMemory">Clear translation memory</button><span id="memorycount" style="margin-left:8px"></span>
 
   <label class="check"><input id="keepDebug" type="checkbox"><span>Keep debug images<small>Saves the last 5 stitched images sent to Gemini so the gear panel can show them. They are copies of comic pages stored on this computer. Off by default.</small></span></label>
 
@@ -100,6 +112,7 @@
   </div>
 
   <script src="secret.js"></script>
+  <script src="eval-set.js"></script>
   <script src="options.js"></script>
 </body>
 </html>

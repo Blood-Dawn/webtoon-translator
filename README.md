@@ -30,19 +30,23 @@ Click any translated bubble to open the editor.
 
 * Retype the text. The bubble updates live.
 * **A-**, **A+** and **Auto** change the font size.
-* Drag the bubble to move it. Drag the blue dot at its corner to resize it. The arrow buttons nudge it a little at a time.
+* Drag the bubble to move it anywhere, even past its own panel. Drag the blue dot at its corner to resize it, and the text refills the box with the largest font that fits. The arrow buttons nudge it a little at a time.
+* **Look** picks a style: speech, thought, shout, narration or sound effect. Then change the fill color (or tick **none** for no fill), the text color, and add an outline in any color. Sound effects without a bubble use no fill and an outline.
+* **Undo** and **Redo** step back and forward through every change to the bubble you are editing, including typing, moves, size and look. Ctrl+Z and Ctrl+Y do the same.
+* **Prev** and **Next** (or Alt+Left and Alt+Right) move to the neighbouring bubble in reading order. Ctrl+Enter saves this bubble and goes on to the next, so you can proofread a whole chapter from the keyboard.
 * **Make female** and **Make male** swap he/she/his/her wording in one click.
 * **Remember this wording** saves your version, and it is used automatically whenever the same Korean line shows up again.
 * **Save** keeps your changes. **Close** or Esc throws them away.
 
 ### The gear panel
 
-The gear button above EN has four tabs.
+The gear button above EN has six tabs.
 
 * **Status:** turn translation on or off, set the wait time, see stats, clear the cache.
-* **Notes:** series notes sent to Gemini with every batch, for example "Han Seo-jin is a woman, use she/her". This is the strongest fix for wrong pronouns, because Korean often leaves gender out.
+* **Notes:** series notes sent with every batch, for example "Han Seo-jin is a woman, use she/her". This is the strongest fix for wrong pronouns, because Korean often leaves gender out. Under it is an optional **Story so far** box for a few sentences of plot. **Update from this chapter** drafts one from the English lines on the page, using your local model if you have one and Gemini otherwise. Read it before you rely on it.
 * **Glossary:** names and terms the extension learns as you read. Gemini suggests them and they wait in a review list. Approve, edit or delete each one. Only approved entries are sent back with later batches, so a wrong guess never sticks on its own. Characters can have a gender, which fixes wrong pronouns. You can also add entries yourself, for one series or for all of them. The Status tab shows how many edits you made in recent chapters, which should go down as the glossary grows.
 * **Fixes:** the list of remembered wordings. Delete any you no longer want.
+* **Find:** search the English of the chapter and replace it everywhere at once, with options for match case and whole word. Click a result to jump to that bubble. Replacements are saved with the chapter.
 * **Images:** the last few stitched images that were sent to Gemini, with the text boxes it found outlined in red. This is off by default. Turn on **Keep debug images** in the settings page to use it.
 
 ### Settings page
@@ -60,6 +64,12 @@ There are two ways to use it.
 * **Everything local (experimental).** A vision model on your computer finds the bubbles and translates them. No API key is needed and nothing leaves your computer, but small models are much weaker at locating bubbles, so expect misses. Panels are sent one at a time in this mode.
 
 Steps: press **Find my models** to list what Ollama has (it marks the ones that can read images), pick a model, then press **Test local translation** to see a sample line and how long it took. The browser asks once for permission to reach `localhost`. Only your own computer is allowed, and any other address is refused.
+
+**Translation memory.** The extension remembers every Korean line it translates, on your computer only. When a local translation model works on a new line, it is shown up to three similar earlier lines from the same series (your own corrections first) so names and phrasing stay the same, along with the story summary. A line you corrected before is used exactly as you wrote it. Turn this off or clear it on the settings page.
+
+**Other translation models.** The "Who writes the English" list also has Chrome's built-in translator (Chrome 138 or newer, Korean to English, a small language pack downloads the first time). Models whose names contain `hunyuan` or `hy-mt` are given the prompt style they were trained on. Everything else gets the TranslateGemma style, which general chat models follow well.
+
+**Quality test.** On the settings page, **Run quality test** sends 50 typical webtoon lines to your local translation model and scores the wording against a human translation, with the time per line. Run it once per model to compare them on your own hardware. The score is a character overlap measure against a single reference, so it ranks models against each other and is not an absolute grade.
 
 If a local step fails, the page keeps the reader's own translation and shows a short message, so a local problem never blanks a panel. If Ollama says it refused the request, set the `OLLAMA_ORIGINS` environment variable to `chrome-extension://*` and restart Ollama.
 

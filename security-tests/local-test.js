@@ -110,6 +110,13 @@ const geminiCount = () => fs.readFileSync(LOG, "utf8").split("\n").filter((l) =>
   await a.sw.evaluate(() =>
     chrome.storage.local.set({ enabled: true, batchSeconds: 3, keepDebug: true, translator: "ollama", ollamaTranslator: "translategemma:12b", ollamaUrl: "http://localhost:11434" })
   );
+  // One earlier line of this series is already remembered, and the series has a story summary.
+  await a.sw.evaluate(() =>
+    chrome.storage.local.set({
+      tm: [{ s: "webtoon.kakao.com:any", ko: "안녕하세요 여러분", en: "Hello everyone MEMORYCANARY" }],
+      summaries: { "webtoon.kakao.com:any": "STORYCANARY the hero starts work at a bank." }
+    })
+  );
   const geminiBefore = geminiCount();
   const pageA = await a.ctx.newPage();
   await pageA.goto("https://webtoon.kakao.com/viewer/test");
@@ -120,6 +127,10 @@ const geminiCount = () => fs.readFileSync(LOG, "utf8").split("\n").filter((l) =>
   check("Gemini was still used to read the panels in that mode", geminiCount() > geminiBefore);
   const textChats = ollamaLog.filter((e) => e.url === "/api/chat" && !e.hasImages);
   check("the local translator received Korean text and no image", textChats.length >= 1 && textChats.every((e) => !e.body.includes("base64")));
+  check("a similar earlier line and the story summary reach the local translator",
+    textChats.some((e) => e.body.includes("MEMORYCANARY") && e.body.includes("STORYCANARY")));
+  const remembered = await a.sw.evaluate(async () => (await TM.load()).filter((e) => e.ko === "안녕하세요").map((e) => e.en));
+  check("the new translation is added to the memory", remembered.includes("LOCAL TRANSLATION"));
   await a.ctx.close();
 
   // ---- Phase B: everything local, no Gemini key at all ----
@@ -146,6 +157,19 @@ const geminiCount = () => fs.readFileSync(LOG, "utf8").split("\n").filter((l) =>
     const accepted = good.map((u) => { try { Ollama.baseUrl(u); return true; } catch (e) { return false; } });
     return { refused, accepted };
   });
+  const units = await b.sw.evaluate(() => {
+    const list = [{ s: "x:1", ko: "안녕하세요 여러분", en: "Hello everyone" }, { s: "other:2", ko: "안녕하세요 여러분", en: "WRONG SERIES" }, { s: "x:1", ko: "전혀 다른 문장입니다", en: "Unrelated" }];
+    const found = TM.find(list, { "안녕하세요 여러분들": "Hello friends (reader)" }, "x:1", "안녕하세요 여러분!", 3);
+    return {
+      first: found[0] && found[0].en,
+      count: found.length,
+      sameSeriesOnly: found.every((f) => f.en !== "WRONG SERIES" && f.en !== "Unrelated"),
+      hunyuan: Ollama.styleFor("hunyuan-mt-7b") + "," + Ollama.styleFor("hy-mt2:7b") + "," + Ollama.styleFor("translategemma:12b"),
+      prompt: buildPrompt("English", "", {}, [], "SUMMARYCANARY").includes("SUMMARYCANARY") && contextBlock("", [], "SUMMARYCANARY").includes("SUMMARYCANARY")
+    };
+  });
+  check("memory finds similar lines of the same series, the reader's own corrections first", units.first === "Hello friends (reader)" && units.count === 2 && units.sameSeriesOnly);
+  check("Hunyuan models get their own prompt style, and the summary joins both prompt builders", units.hunyuan === "hunyuan,hunyuan,translategemma" && units.prompt);
   check("addresses outside this computer are refused, local ones accepted", guard.refused.every(Boolean) && guard.accepted.every(Boolean));
   await b.ctx.close();
   fake.close();

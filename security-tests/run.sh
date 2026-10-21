@@ -17,3 +17,4 @@ else
 fi
 $RUN test.js "$EXT"
 $RUN local-test.js "$EXT"
+$RUN editor-test.js "$EXT"

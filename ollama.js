@@ -149,15 +149,34 @@
   const HANGUL = /[ᄀ-ᇿ㄰-㆏가-힣]/;
   const CHATTER = /(provide|share|send|paste|give me)\b[^.\n]{0,40}\b(korean|text)|i (need|will|can) (the|do|help|translate)|absolutely[.!]|korean text you/i;
 
-  // Translation only, one line per request, so a translation model sees plain Korean text.
-  async function translateOne(base, model, text, lang, context) {
-    const prompt =
+  // Different translation models expect different instructions. Hunyuan-MT models are trained on a short
+  // plain request, TranslateGemma on a longer professional translator template. Anything else gets the
+  // longer template too, which general chat models follow well.
+  function styleFor(model) {
+    return /hunyuan|hy-mt/i.test(String(model)) ? "hunyuan" : "translategemma";
+  }
+
+  function translationPrompt(model, text, lang, context) {
+    if (styleFor(model) === "hunyuan") {
+      return (context ? context + "\n\n" : "") + "Translate the following segment into " + lang + ", without additional explanation.\n\n" + text;
+    }
+    return (
       "You are a professional Korean (ko) to " + lang + " translator. Your goal is to accurately convey the meaning and nuances of the original Korean text while adhering to " + lang + " grammar, vocabulary, and cultural sensitivities.\n" +
       "Produce only the " + lang + " translation, without any additional explanations or commentary." +
       (context ? "\n\n" + context : "") +
-      "\n\nPlease translate the following Korean text into " + lang + ":\n\n\n" + text;
-    const content = await chat(base, model, [{ role: "user", content: prompt }]);
+      "\n\nPlease translate the following Korean text into " + lang + ":\n\n\n" + text
+    );
+  }
+
+  // Translation only, one line per request, so a translation model sees plain Korean text.
+  async function translateOne(base, model, text, lang, context) {
+    const content = await chat(base, model, [{ role: "user", content: translationPrompt(model, text, lang, context) }]);
     return content.trim();
+  }
+
+  // A plain question to a local model, for things like drafting a story summary.
+  async function ask(rawUrl, model, prompt) {
+    return (await chat(baseUrl(rawUrl), model, [{ role: "user", content: prompt }])).trim();
   }
 
   // Returns one translation per input line. A line that fails keeps its fallback.
@@ -174,7 +193,7 @@
         continue;
       }
       try {
-        const t = await translateOne(base, model, text, lang, context);
+        const t = await translateOne(base, model, text, lang, typeof context === "function" ? context(text) : context);
         // A reply that talks to the reader instead of translating is thrown away.
         const chatter = CHATTER.test(t);
         out.push(t && !chatter ? t : fallback[i]);
@@ -189,5 +208,5 @@
     return { lines: out, failed };
   }
 
-  g.Ollama = { DEFAULT_URL, baseUrl, permissionPattern, listModels, read, translateLines };
+  g.Ollama = { DEFAULT_URL, baseUrl, permissionPattern, listModels, read, translateLines, ask, styleFor };
 })(self);

@@ -1,5 +1,5 @@
 const $ = (id) => document.getElementById(id);
-const BACKUP_KEYS = ["model", "lang", "batchSeconds", "notes", "corrections", "glossary", "provider", "ollamaUrl", "ollamaReader", "translator", "ollamaTranslator"];
+const BACKUP_KEYS = ["model", "lang", "batchSeconds", "notes", "corrections", "glossary", "provider", "ollamaUrl", "ollamaReader", "translator", "ollamaTranslator", "useMemory", "summaries"];
 const LOCAL_URL = /^http:\/\/(localhost|127\.0\.0\.1)(:\d{1,5})?\/?$/;
 const DEFAULT_OLLAMA = "http://localhost:11434";
 
@@ -45,9 +45,10 @@ function showTest(ok, text) {
 (async () => {
   // Older versions kept the key in regular extension storage. Move it into private storage.
   await Secrets.migrate().catch(() => {});
-  const cfg = await chrome.storage.local.get(["model", "lang", "batchSeconds", "keepDebug", "provider", "ollamaUrl", "ollamaReader", "translator", "ollamaTranslator"]);
+  const cfg = await chrome.storage.local.get(["model", "lang", "batchSeconds", "keepDebug", "provider", "ollamaUrl", "ollamaReader", "translator", "ollamaTranslator", "useMemory"]);
   $("provider").value = cfg.provider === "ollama" ? "ollama" : "gemini";
-  $("translator").value = cfg.translator === "ollama" ? "ollama" : "same";
+  $("translator").value = cfg.translator === "ollama" || cfg.translator === "chrome" ? cfg.translator : "same";
+  $("useMemory").checked = cfg.useMemory !== false;
   $("ollamaUrl").value = cfg.ollamaUrl || DEFAULT_OLLAMA;
   $("ollamaReader").value = cfg.ollamaReader || "";
   $("ollamaTranslator").value = cfg.ollamaTranslator || "";
@@ -86,7 +87,8 @@ $("save").addEventListener("click", async () => {
     batchSeconds: Math.min(60, Math.max(0, $("batchSeconds").value === "" ? 10 : Number($("batchSeconds").value) || 0)),
     keepDebug,
     provider: $("provider").value === "ollama" ? "ollama" : "gemini",
-    translator: $("translator").value === "ollama" ? "ollama" : "same",
+    translator: ["ollama", "chrome"].includes($("translator").value) ? $("translator").value : "same",
+    useMemory: $("useMemory").checked,
     ollamaUrl: url,
     ollamaReader: $("ollamaReader").value.trim().slice(0, 100),
     ollamaTranslator: $("ollamaTranslator").value.trim().slice(0, 100)
@@ -202,7 +204,13 @@ function cleanBackup(obj) {
   if (typeof s.batchSeconds === "number") out.batchSeconds = Math.min(60, Math.max(0, s.batchSeconds));
   if (typeof s.notes === "string") out.notes = s.notes.slice(0, 4000);
   if (s.provider === "gemini" || s.provider === "ollama") out.provider = s.provider;
-  if (s.translator === "same" || s.translator === "ollama") out.translator = s.translator;
+  if (s.translator === "same" || s.translator === "ollama" || s.translator === "chrome") out.translator = s.translator;
+  if (typeof s.useMemory === "boolean") out.useMemory = s.useMemory;
+  if (s.summaries && typeof s.summaries === "object" && !Array.isArray(s.summaries)) {
+    const m = {};
+    for (const [k, v] of Object.entries(s.summaries).slice(0, 40)) if (typeof v === "string" && k.length <= 80) m[k] = v.slice(0, 1500);
+    out.summaries = m;
+  }
   if (typeof s.ollamaUrl === "string" && LOCAL_URL.test(s.ollamaUrl)) out.ollamaUrl = s.ollamaUrl.replace(/\/+$/, "");
   if (typeof s.ollamaReader === "string") out.ollamaReader = s.ollamaReader.slice(0, 100);
   if (typeof s.ollamaTranslator === "string") out.ollamaTranslator = s.ollamaTranslator.slice(0, 100);
@@ -258,4 +266,112 @@ $("importFile").addEventListener("change", async (e) => {
   } catch (err) {
     flash("That file is not a Webtoon Translator backup", 4000);
   }
+});
+
+
+// ---------- translation memory ----------
+async function showMemoryCount() {
+  try {
+    const r = await chrome.runtime.sendMessage({ type: "memoryCount" });
+    $("memorycount").textContent = r && r.ok ? r.count + " lines remembered" : "";
+  } catch (e) {
+    $("memorycount").textContent = "";
+  }
+}
+showMemoryCount();
+$("clearMemory").addEventListener("click", async () => {
+  const r = await chrome.runtime.sendMessage({ type: "memoryClear" });
+  $("memorycount").textContent = r && r.ok ? "Cleared " + r.count + " lines" : "Could not clear";
+});
+
+// ---------- quality test ----------
+// chrF: how many character pieces (1 to 6 long) a translation shares with the reference, weighted toward
+// recall. It rewards matching wording, so it ranks models against each other rather than grading one alone.
+function chrf(hyp, ref) {
+  const prep = (t) => String(t).toLowerCase().replace(/\s+/g, "");
+  const h = prep(hyp);
+  const r = prep(ref);
+  if (!h || !r) return 0;
+  const beta2 = 4;
+  let pSum = 0;
+  let rSum = 0;
+  let used = 0;
+  for (let n = 1; n <= 6; n++) {
+    const count = (t) => {
+      const m = new Map();
+      for (let i = 0; i + n <= t.length; i++) m.set(t.slice(i, i + n), (m.get(t.slice(i, i + n)) || 0) + 1);
+      return m;
+    };
+    const hm = count(h);
+    const rm = count(r);
+    if (!hm.size || !rm.size) continue;
+    let match = 0;
+    let hTot = 0;
+    let rTot = 0;
+    for (const v of hm.values()) hTot += v;
+    for (const v of rm.values()) rTot += v;
+    for (const [k, v] of hm) match += Math.min(v, rm.get(k) || 0);
+    pSum += match / hTot;
+    rSum += match / rTot;
+    used++;
+  }
+  if (!used) return 0;
+  const p = pSum / used;
+  const rec = rSum / used;
+  return p + rec === 0 ? 0 : ((1 + beta2) * p * rec) / (beta2 * p + rec);
+}
+
+$("runEval").addEventListener("click", async () => {
+  const model = $("ollamaTranslator").value.trim();
+  const url = localUrl();
+  const set = window.WT_EVAL || [];
+  if (!model || !url) {
+    $("evalprogress").textContent = "Type a local translation model above first.";
+    return;
+  }
+  if (!(await ensureLocalPermission(url))) {
+    $("evalprogress").textContent = "Allow access to this computer, then press the button again.";
+    return;
+  }
+  $("runEval").disabled = true;
+  $("evalresult").textContent = "";
+  const outputs = [];
+  const t0 = Date.now();
+  try {
+    for (let i = 0; i < set.length; i += 5) {
+      const chunk = set.slice(i, i + 5);
+      $("evalprogress").textContent = "Translating " + Math.min(i + 5, set.length) + " of " + set.length + "...";
+      const r = await chrome.runtime.sendMessage({ type: "ollamaBatch", url, model, lang: $("lang").value.trim() || "English", lines: chunk.map((c) => c.ko) });
+      if (!r || !r.ok) throw new Error((r && r.error) || "No answer");
+      r.lines.forEach((t) => outputs.push(t));
+    }
+  } catch (e) {
+    $("evalprogress").textContent = "Stopped: " + e.message;
+    $("runEval").disabled = false;
+    return;
+  }
+  const seconds = (Date.now() - t0) / 1000;
+  const scores = set.map((c, i) => chrf(outputs[i] || "", c.en) * 100);
+  const avg = scores.reduce((a, b) => a + b, 0) / scores.length;
+  const byKind = {};
+  set.forEach((c, i) => {
+    (byKind[c.kind] = byKind[c.kind] || []).push(scores[i]);
+  });
+  const lines = ["Score " + avg.toFixed(1) + " out of 100, " + (seconds / set.length).toFixed(1) + " seconds per line (the first line includes loading the model)."];
+  lines.push(Object.entries(byKind).map(([k, v]) => k + " " + (v.reduce((a, b) => a + b, 0) / v.length).toFixed(0)).join("   "));
+  const worst = scores.map((s, i) => [s, i]).sort((a, b) => a[0] - b[0]).slice(0, 4);
+  lines.push("Weakest lines:");
+  worst.forEach(([, i]) => lines.push(set[i].ko + "\n  model: " + outputs[i] + "\n  reference: " + set[i].en));
+  $("evalprogress").textContent = "Done.";
+  $("evalresult").style.whiteSpace = "pre-wrap";
+  $("evalresult").textContent = lines.join("\n");
+  try {
+    const prev = (await chrome.storage.local.get("evalResults")).evalResults || {};
+    prev[model] = { score: Math.round(avg * 10) / 10, secPerLine: Math.round((seconds / set.length) * 10) / 10 };
+    await chrome.storage.local.set({ evalResults: prev });
+    $("evalresult").textContent += "\n\nAll models tested so far:\n" + Object.entries(prev).map(([m, v]) => m + ": " + v.score + " (" + v.secPerLine + " s per line)").join("\n");
+  } catch (e) {
+    /* the score is still shown */
+  }
+  $("runEval").disabled = false;
 });
