@@ -11,7 +11,9 @@ trap 'kill $SERVER 2>/dev/null' EXIT
 sleep 2
 EXT="${1:-..}"
 if command -v xvfb-run >/dev/null 2>&1; then
-  xvfb-run -a node test.js "$EXT"
+  RUN="xvfb-run -a node"
 else
-  node test.js "$EXT"
+  RUN="node"
 fi
+$RUN test.js "$EXT"
+$RUN local-test.js "$EXT"

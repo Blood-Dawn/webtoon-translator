@@ -1,4 +1,4 @@
-importScripts("secret.js");
+importScripts("secret.js", "ollama.js");
 
 const DEFAULTS = { model: "gemini-3.8-flash", lang: "English" };
 const MAX_DEBUG_BATCHES = 5;
@@ -44,8 +44,20 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function installRefererRule() {
   try {
     await chrome.declarativeNetRequest.updateDynamicRules({
-      removeRuleIds: [1],
+      removeRuleIds: [1, 2],
       addRules: [
+        {
+          // Ollama refuses requests that carry a browser extension origin. Dropping that header from this
+          // extension's own requests to this computer lets it connect without changing Ollama's settings.
+          id: 2,
+          priority: 1,
+          action: { type: "modifyHeaders", requestHeaders: [{ header: "origin", operation: "remove" }] },
+          condition: {
+            initiatorDomains: [chrome.runtime.id],
+            requestDomains: ["localhost", "127.0.0.1"],
+            resourceTypes: ["xmlhttprequest"]
+          }
+        },
         {
           id: 1,
           priority: 1,
@@ -103,7 +115,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || !trustedSender(sender)) return false;
   if (msg.type === "translate") {
     translate(msg.url, msg.dataUrl, msg.panels, msg.series)
-      .then((r) => sendResponse({ ok: true, boxes: r.boxes, terms: r.terms }))
+      .then((r) => sendResponse({ ok: true, boxes: r.boxes, terms: r.terms, warning: r.warning }))
       .catch((e) => sendResponse({ ok: false, error: e.message, code: e.code }));
     return true;
   }
@@ -111,6 +123,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     fetchImage(msg.url)
       .then((img) => sendResponse({ ok: true, dataUrl: "data:" + img.mime + ";base64," + img.data }))
       .catch((e) => sendResponse({ ok: false, error: e.message }));
+    return true;
+  }
+  if (msg.type === "ollamaModels" || msg.type === "ollamaTest") {
+    // Only the extension's own settings page may probe the local server.
+    if (!sender.url || !sender.url.startsWith("chrome-extension://" + chrome.runtime.id + "/")) return false;
+    if (msg.type === "ollamaModels") {
+      Ollama.listModels(msg.url)
+        .then((models) => sendResponse({ ok: true, models }))
+        .catch((e) => sendResponse({ ok: false, error: e.message }));
+    } else {
+      const t0 = Date.now();
+      Ollama.translateLines(msg.url, String(msg.model || ""), ["오늘도 늦었네. 또 야근이야?"], String(msg.lang || "English"), "", [""])
+        .then((r) => sendResponse({ ok: true, text: r.lines[0], ms: Date.now() - t0 }))
+        .catch((e) => sendResponse({ ok: false, error: e.message }));
+    }
     return true;
   }
   if (msg.type === "testKey") {
@@ -310,13 +337,34 @@ async function saveBatch(entry) {
   }
 }
 
+// Notes, characters and glossary as plain text for a translation model that is not given the image.
+function contextBlock(notes, glossary) {
+  const parts = [];
+  if (notes) parts.push("Notes about this series. Follow them:\n" + String(notes).slice(0, 2000));
+  const chars = glossary.filter((g) => g.type === "character");
+  const terms = glossary.filter((g) => g.type !== "character");
+  if (chars.length) parts.push("Characters:\n" + chars.map((g) => g.ko + " = " + g.en + (g.gender ? " (" + g.gender + ")" : "")).join("\n"));
+  if (terms.length) parts.push("Glossary:\n" + terms.map((g) => g.ko + " = " + g.en).join("\n"));
+  return parts.join("\n\n");
+}
+
 async function translate(url, dataUrl, panels, series) {
-  const cfg = await chrome.storage.local.get(["model", "lang", "notes", "corrections", "keepDebug", "glossary"]);
-  const apiKey = await Secrets.get("apiKey");
-  if (!apiKey) {
-    const err = new Error("Add your Gemini API key in the extension settings first.");
-    err.code = "NO_KEY";
-    throw err;
+  const cfg = await chrome.storage.local.get([
+    "model", "lang", "notes", "corrections", "keepDebug", "glossary",
+    "provider", "ollamaUrl", "ollamaReader", "translator", "ollamaTranslator"
+  ]);
+  // The reader finds the bubbles. It is Gemini unless the reader was switched to a local vision model.
+  const localReader = cfg.provider === "ollama";
+  let apiKey = null;
+  if (localReader) {
+    if (!cfg.ollamaReader) throw new Error("Pick a local vision model in the extension settings first.");
+  } else {
+    apiKey = await Secrets.get("apiKey");
+    if (!apiKey) {
+      const err = new Error("Add your Gemini API key in the extension settings first.");
+      err.code = "NO_KEY";
+      throw err;
+    }
   }
   // gemini-2.5-flash was retired for new API users, so an old saved value falls back to the default.
   const model = !cfg.model || cfg.model === "gemini-2.5-flash" ? DEFAULTS.model : cfg.model;
@@ -332,9 +380,35 @@ async function translate(url, dataUrl, panels, series) {
     img = await fetchImage(url);
   }
 
-  const prompt = buildPrompt(lang, cfg.notes, cfg.corrections, pickGlossary(cfg.glossary, String(series || "").slice(0, 80)));
-  const { bubbles, terms } = await callGemini(apiKey, model, img.mime, img.data, prompt);
+  const glossary = pickGlossary(cfg.glossary, String(series || "").slice(0, 80));
+  const prompt = buildPrompt(lang, cfg.notes, cfg.corrections, glossary);
+  const read = localReader
+    ? await Ollama.read(cfg.ollamaUrl, cfg.ollamaReader, img.data, prompt)
+    : await callGemini(apiKey, model, img.mime, img.data, prompt);
+  let bubbles = read.bubbles;
+  const terms = cleanTerms(read.terms);
+  let warning = "";
+
+  // Optional second step: a translation model on this computer rewrites each line from the Korean text.
+  // If it fails, the reader's own translation stays, so a local problem never blanks the page.
+  if (cfg.translator === "ollama" && cfg.ollamaTranslator && bubbles.length) {
+    try {
+      const r = await Ollama.translateLines(
+        cfg.ollamaUrl,
+        cfg.ollamaTranslator,
+        bubbles.map((b) => b.original),
+        lang,
+        contextBlock(cfg.notes, glossary),
+        bubbles.map((b) => b.translation)
+      );
+      bubbles = bubbles.map((b, i) => Object.assign({}, b, { translation: r.lines[i] }));
+      if (r.failed) warning = r.failed + " line(s) could not be translated locally and keep the reader's wording.";
+    } catch (e) {
+      warning = "The local translator did not work, so the reader's own translation is shown. " + e.message;
+    }
+  }
+
   // Kept only when the reader turned on "keep debug images", since they are copies of the comic pages.
-  if (cfg.keepDebug) saveBatch({ t: Date.now(), model, panels: panels || 1, dataUrl: "data:" + img.mime + ";base64," + img.data, boxes: bubbles });
-  return { boxes: bubbles, terms };
+  if (cfg.keepDebug) saveBatch({ t: Date.now(), model: localReader ? cfg.ollamaReader : model, panels: panels || 1, dataUrl: "data:" + img.mime + ";base64," + img.data, boxes: bubbles });
+  return { boxes: bubbles, terms, warning };
 }

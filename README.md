@@ -50,6 +50,19 @@ The gear button above EN has four tabs.
 * **Test my key** checks that Google accepts your key, without translating anything. Failures come back as plain sentences, such as "You hit Google's rate limit".
 * **Export settings** and **Import settings** back up your model, language, wait time, series notes and saved fixes to a file. The file never contains your API key.
 
+## Local models with Ollama (optional)
+
+You can run a model on your own computer with [Ollama](https://ollama.com). Install it, then download a model, for example `ollama pull translategemma:12b` (8.1 GB, fits in 16 GB of video memory). Open the extension's settings page and use the **Local models** section.
+
+There are two ways to use it.
+
+* **Gemini reads, your computer translates (recommended).** Gemini still finds the bubbles and reads the Korean, and the local model writes the English line by line. This works well because finding bubbles in tall panels is the hard part. Gemini still sees the panels in this mode.
+* **Everything local (experimental).** A vision model on your computer finds the bubbles and translates them. No API key is needed and nothing leaves your computer, but small models are much weaker at locating bubbles, so expect misses. Panels are sent one at a time in this mode.
+
+Steps: press **Find my models** to list what Ollama has (it marks the ones that can read images), pick a model, then press **Test local translation** to see a sample line and how long it took. The browser asks once for permission to reach `localhost`. Only your own computer is allowed, and any other address is refused.
+
+If a local step fails, the page keeps the reader's own translation and shows a short message, so a local problem never blanks a panel. If Ollama says it refused the request, set the `OLLAMA_ORIGINS` environment variable to `chrome-extension://*` and restart Ollama.
+
 ## Notes and limits
 
 * Notes and new prompt behavior only apply to panels translated from now on. Use **Clear translation cache** on the Status tab to redo panels you already have.

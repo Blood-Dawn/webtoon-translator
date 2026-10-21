@@ -20,6 +20,8 @@ These tests run the extension in a real Chromium and check where your API key an
 * Test my key succeeds and sends the key only to Google.
 * Importing a hand-edited settings file cannot add unknown settings or change the API key.
 * Copies of comic pages are not kept unless the reader turns on debug images.
+* Only approved glossary entries for the current series reach Gemini, the instructions come before the image, and suggested terms wait for review.
+* Local models (`local-test.js`, against a fake Ollama that refuses browser origins like the real one): model listing, the Gemini plus local translator mode, the fully local mode with no key and no Gemini request, and refusal of any address that is not this computer. The test copy of the extension has the localhost permission made required, because a script cannot click the browser's permission prompt.
 
 ## Running it
 

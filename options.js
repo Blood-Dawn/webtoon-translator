@@ -1,5 +1,20 @@
 const $ = (id) => document.getElementById(id);
-const BACKUP_KEYS = ["model", "lang", "batchSeconds", "notes", "corrections", "glossary"];
+const BACKUP_KEYS = ["model", "lang", "batchSeconds", "notes", "corrections", "glossary", "provider", "ollamaUrl", "ollamaReader", "translator", "ollamaTranslator"];
+const LOCAL_URL = /^http:\/\/(localhost|127\.0\.0\.1)(:\d{1,5})?\/?$/;
+const DEFAULT_OLLAMA = "http://localhost:11434";
+
+// The browser must grant access to localhost before the extension can talk to Ollama. Call from a click.
+async function ensureLocalPermission(url) {
+  const host = /^http:\/\/([^:/]+)/.exec(url)[1];
+  const origins = ["http://" + host + "/*"];
+  if (await chrome.permissions.contains({ origins })) return true;
+  return chrome.permissions.request({ origins });
+}
+
+function localUrl() {
+  const v = ($("ollamaUrl").value.trim() || DEFAULT_OLLAMA).replace(/\/+$/, "");
+  return LOCAL_URL.test(v) ? v : null;
+}
 let keyTested = false;
 
 function flash(text, ms) {
@@ -30,7 +45,12 @@ function showTest(ok, text) {
 (async () => {
   // Older versions kept the key in regular extension storage. Move it into private storage.
   await Secrets.migrate().catch(() => {});
-  const cfg = await chrome.storage.local.get(["model", "lang", "batchSeconds", "keepDebug"]);
+  const cfg = await chrome.storage.local.get(["model", "lang", "batchSeconds", "keepDebug", "provider", "ollamaUrl", "ollamaReader", "translator", "ollamaTranslator"]);
+  $("provider").value = cfg.provider === "ollama" ? "ollama" : "gemini";
+  $("translator").value = cfg.translator === "ollama" ? "ollama" : "same";
+  $("ollamaUrl").value = cfg.ollamaUrl || DEFAULT_OLLAMA;
+  $("ollamaReader").value = cfg.ollamaReader || "";
+  $("ollamaTranslator").value = cfg.ollamaTranslator || "";
   $("model").value = !cfg.model || cfg.model === "gemini-2.5-flash" ? "gemini-3.8-flash" : cfg.model;
   $("lang").value = cfg.lang || "English";
   $("batchSeconds").value = cfg.batchSeconds || 10;
@@ -39,6 +59,20 @@ function showTest(ok, text) {
 })();
 
 $("save").addEventListener("click", async () => {
+  const url = localUrl();
+  if (!url) {
+    flash("The Ollama address must be localhost or 127.0.0.1", 4000);
+    return;
+  }
+  const wantsLocal = $("provider").value === "ollama" || $("translator").value === "ollama";
+  if (wantsLocal) {
+    // Asked first, because the browser only allows this right after a click.
+    const granted = await ensureLocalPermission(url);
+    if (!granted) {
+      flash("Local models need permission to reach this computer. Press Save again and allow it.", 5000);
+      return;
+    }
+  }
   const key = $("apiKey").value.trim();
   if (key) {
     await Secrets.set("apiKey", key);
@@ -50,7 +84,12 @@ $("save").addEventListener("click", async () => {
     model: $("model").value.trim() || "gemini-3.8-flash",
     lang: $("lang").value.trim() || "English",
     batchSeconds: Math.min(60, Math.max(3, Number($("batchSeconds").value) || 10)),
-    keepDebug
+    keepDebug,
+    provider: $("provider").value === "ollama" ? "ollama" : "gemini",
+    translator: $("translator").value === "ollama" ? "ollama" : "same",
+    ollamaUrl: url,
+    ollamaReader: $("ollamaReader").value.trim().slice(0, 100),
+    ollamaTranslator: $("ollamaTranslator").value.trim().slice(0, 100)
   });
   if (!keepDebug) await chrome.storage.local.remove("dbgBatches");
   await showKeyState();
@@ -74,6 +113,55 @@ $("testKey").addEventListener("click", async () => {
   } else {
     showTest(false, (res && res.error) || "The test failed.");
   }
+});
+
+function showLocal(ok, text) {
+  $("localresult").className = ok ? "ok" : "bad";
+  $("localresult").textContent = text;
+}
+
+$("findModels").addEventListener("click", async () => {
+  const url = localUrl();
+  if (!url) return showLocal(false, "The Ollama address must be localhost or 127.0.0.1.");
+  if (!(await ensureLocalPermission(url))) return showLocal(false, "Permission to reach this computer was not granted.");
+  showLocal(true, "Looking...");
+  let res;
+  try {
+    res = await chrome.runtime.sendMessage({ type: "ollamaModels", url });
+  } catch (e) {
+    res = { ok: false, error: "The extension did not answer. Reload it at chrome://extensions." };
+  }
+  if (!res || !res.ok) return showLocal(false, (res && res.error) || "Could not list models.");
+  const list = $("localModels");
+  list.textContent = "";
+  res.models.forEach((m) => {
+    const o = document.createElement("option");
+    o.value = m.name;
+    list.appendChild(o);
+  });
+  showLocal(
+    true,
+    res.models.length
+      ? res.models.map((m) => m.name + "  (" + m.sizeGB + " GB" + (m.vision ? ", reads images" : "") + ")").join("\n")
+      : "Ollama is running but has no models yet. Download one, for example: ollama pull translategemma:12b"
+  );
+});
+
+$("testLocal").addEventListener("click", async () => {
+  const url = localUrl();
+  const model = $("ollamaTranslator").value.trim() || $("ollamaReader").value.trim();
+  if (!url) return showLocal(false, "The Ollama address must be localhost or 127.0.0.1.");
+  if (!model) return showLocal(false, "Type a model name first, or press Find my models.");
+  if (!(await ensureLocalPermission(url))) return showLocal(false, "Permission to reach this computer was not granted.");
+  showLocal(true, "Translating a sample line with " + model + "... the first request loads the model and can take a while.");
+  let res;
+  try {
+    res = await chrome.runtime.sendMessage({ type: "ollamaTest", url, model, lang: $("lang").value.trim() || "English" });
+  } catch (e) {
+    res = { ok: false, error: "The extension did not answer. Reload it at chrome://extensions." };
+  }
+  if (res && res.ok) showLocal(true, "오늘도 늦었네. 또 야근이야?\n=> " + res.text + "\n(" + (res.ms / 1000).toFixed(1) + " seconds)");
+  else showLocal(false, (res && res.error) || "The test failed.");
 });
 
 $("removeKey").addEventListener("click", async () => {
@@ -113,6 +201,11 @@ function cleanBackup(obj) {
   if (typeof s.lang === "string") out.lang = s.lang.slice(0, 40);
   if (typeof s.batchSeconds === "number") out.batchSeconds = Math.min(60, Math.max(3, Math.round(s.batchSeconds)));
   if (typeof s.notes === "string") out.notes = s.notes.slice(0, 4000);
+  if (s.provider === "gemini" || s.provider === "ollama") out.provider = s.provider;
+  if (s.translator === "same" || s.translator === "ollama") out.translator = s.translator;
+  if (typeof s.ollamaUrl === "string" && LOCAL_URL.test(s.ollamaUrl)) out.ollamaUrl = s.ollamaUrl.replace(/\/+$/, "");
+  if (typeof s.ollamaReader === "string") out.ollamaReader = s.ollamaReader.slice(0, 100);
+  if (typeof s.ollamaTranslator === "string") out.ollamaTranslator = s.ollamaTranslator.slice(0, 100);
   if (s.corrections && typeof s.corrections === "object" && !Array.isArray(s.corrections)) {
     const c = {};
     for (const [ko, en] of Object.entries(s.corrections).slice(0, 2000)) {

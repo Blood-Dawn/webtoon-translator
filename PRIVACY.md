@@ -31,6 +31,10 @@ The extension also downloads panel images from Kakao's image hosts (`kakaocdn.ne
 
 The "Test my key" button sends your key to Google to check that it is valid. It generates no translation.
 
+## Local models (optional)
+
+If you turn on a local model, the extension talks to an Ollama server on your own computer (`localhost` or `127.0.0.1` only, after you grant the browser permission). With a local translator, the Korean text of each bubble goes to that server. With a local reader, the panel images go to that server instead of to Google, and your Gemini key is not used. Ollama runs on your computer, and its own data handling is described by its developers. The extension refuses any address that is not on your own computer.
+
 ## What the extension does not do
 
 * It does not send your key, settings, notes or translations to the developer or to any third party other than Google as described above.

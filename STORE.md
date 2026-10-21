@@ -37,6 +37,7 @@ Translate the Korean text in webtoon panels on Kakao into English and display it
 * Host `https://page.kakao.com/*` and `https://webtoon.kakao.com/*`: the sites where the extension reads panels and shows translations.
 * Host `https://*.kakaocdn.net/*` and `https://*.daumcdn.net/*`: Kakao's image hosts, used as a fallback to download a panel that the page could not hand over directly.
 * Host `https://generativelanguage.googleapis.com/*`: Google's Gemini API, where translation requests are sent.
+* Optional hosts `http://localhost/*` and `http://127.0.0.1/*`: requested only when the reader turns on a local Ollama model, so the extension can talk to that server on the reader's own computer. Never requested otherwise.
 
 ## Remote code
 

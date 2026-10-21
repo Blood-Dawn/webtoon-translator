@@ -564,8 +564,9 @@
     let height = 0;
     for (const p of list) {
       const h = p.source ? p.source.naturalHeight : p.img.naturalHeight;
-      if (chosen.length >= MAX_PANELS_PER_BATCH) break;
-      if (chosen.length && height + h + GAP > MAX_STITCH_HEIGHT) continue;
+      // A local vision model sees a small, fixed size picture, so it gets one panel at a time.
+      if (chosen.length >= (settings.localReader ? 1 : MAX_PANELS_PER_BATCH)) break;
+      if (chosen.length && height + h + GAP > (settings.localReader ? 3000 : MAX_STITCH_HEIGHT)) continue;
       chosen.push(p);
       height += h + GAP;
     }
@@ -655,6 +656,7 @@
       }
       dbg.batches++;
       dbg.panelsSent += chosen.length;
+      if (res.warning) toast(res.warning);
       countUsage(res.boxes);
       learnTerms(res.terms);
       const perPanel = splitBoxes(res.boxes, layout, W, H);
@@ -797,6 +799,7 @@
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area !== "local") return;
       if (changes.batchSeconds) settings.batchSeconds = Number(changes.batchSeconds.newValue) || 10;
+      if (changes.provider) settings.localReader = changes.provider.newValue === "ollama";
       if (changes.notes) KT.notes = changes.notes.newValue || "";
       if (changes.corrections) KT.corrections = changes.corrections.newValue || {};
       if (changes.glossary) KT.glossary = changes.glossary.newValue || [];
@@ -809,7 +812,8 @@
   (async () => {
     let saved = false;
     try {
-      const cfg = await chrome.storage.local.get(["enabled", "batchSeconds", "notes", "corrections", "glossary", "editStats"]);
+      const cfg = await chrome.storage.local.get(["enabled", "batchSeconds", "notes", "corrections", "glossary", "editStats", "provider"]);
+      settings.localReader = cfg.provider === "ollama";
       KT.glossary = Array.isArray(cfg.glossary) ? cfg.glossary : [];
       KT.editStats = cfg.editStats || {};
       saved = !!cfg.enabled;

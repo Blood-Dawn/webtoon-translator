@@ -13,7 +13,8 @@
     small { color: #666; display: block; margin-top: 4px; }
     button { margin-top: 12px; padding: 9px 18px; font-size: 14px; cursor: pointer; }
     #msg { margin-left: 12px; color: #1a7f37; }
-    #testresult { margin-top: 8px; font-size: 14px; }
+    #testresult, #localresult { margin-top: 8px; font-size: 14px; white-space: pre-wrap; }
+    select { width: 100%; padding: 8px; margin-top: 6px; box-sizing: border-box; font-size: 14px; }
     .ok { color: #1a7f37; }
     .bad { color: #b3261e; }
     .tip { margin-top: 28px; padding: 10px 12px; background: #eef4ff; border-radius: 8px; font-size: 14px; }
@@ -52,6 +53,36 @@
   <label for="batchSeconds">Seconds to wait before sending a batch</label>
   <input id="batchSeconds" type="number" min="3" max="60" placeholder="10">
   <small>Panels you scroll past in this window are stitched into one image and sent as a single request.</small>
+
+  <h2>Local models (Ollama)</h2>
+  <small>Run a model on this computer instead of, or alongside, Gemini. Install Ollama from ollama.com and download a model first. When a local model is used, that work never leaves your computer.</small>
+
+  <label for="provider">Who reads the panels and finds the bubbles</label>
+  <select id="provider">
+    <option value="gemini">Gemini (recommended)</option>
+    <option value="ollama">A vision model on this computer (experimental)</option>
+  </select>
+  <small>Finding bubbles in tall webtoon panels is hard for small local models. Gemini is much more reliable at it.</small>
+
+  <label for="translator">Who writes the English</label>
+  <select id="translator">
+    <option value="same">The reader</option>
+    <option value="ollama">A translation model on this computer</option>
+  </select>
+  <small>With Gemini as the reader, the local model rewrites each line from the Korean text. Gemini still sees the panels.</small>
+
+  <label for="ollamaUrl">Ollama address</label>
+  <input id="ollamaUrl" type="text" placeholder="http://localhost:11434">
+  <small>Only this computer is allowed (localhost or 127.0.0.1).</small>
+
+  <label for="ollamaReader">Local vision model (reader)</label>
+  <input id="ollamaReader" type="text" list="localModels" placeholder="a model that can read images">
+  <label for="ollamaTranslator">Local translation model</label>
+  <input id="ollamaTranslator" type="text" list="localModels" placeholder="for example translategemma:12b">
+  <datalist id="localModels"></datalist>
+  <button id="findModels">Find my models</button>
+  <button id="testLocal" style="margin-left:8px">Test local translation</button>
+  <div id="localresult"></div>
 
   <label class="check"><input id="keepDebug" type="checkbox"><span>Keep debug images<small>Saves the last 5 stitched images sent to Gemini so the gear panel can show them. They are copies of comic pages stored on this computer. Off by default.</small></span></label>
 
