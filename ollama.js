@@ -55,7 +55,8 @@
   }
 
   async function chat(base, model, messages, format) {
-    const payload = { model, messages, stream: false, options: { temperature: 0.2, num_ctx: 8192 } };
+    // keep_alive holds the model in GPU memory between panels, which is most of the speed difference.
+    const payload = { model, messages, stream: false, keep_alive: "30m", options: { temperature: 0.2, num_ctx: 8192 } };
     if (format) payload.format = format;
     const j = await request(base, "/api/chat", "POST", payload, model, CHAT_TIMEOUT_MS);
     return (j.message && j.message.content) || "";

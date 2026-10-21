@@ -83,7 +83,7 @@ $("save").addEventListener("click", async () => {
   await chrome.storage.local.set({
     model: $("model").value.trim() || "gemini-3.8-flash",
     lang: $("lang").value.trim() || "English",
-    batchSeconds: Math.min(60, Math.max(3, Number($("batchSeconds").value) || 10)),
+    batchSeconds: Math.min(60, Math.max(0, $("batchSeconds").value === "" ? 10 : Number($("batchSeconds").value) || 0)),
     keepDebug,
     provider: $("provider").value === "ollama" ? "ollama" : "gemini",
     translator: $("translator").value === "ollama" ? "ollama" : "same",
@@ -199,7 +199,7 @@ function cleanBackup(obj) {
   const out = {};
   if (typeof s.model === "string") out.model = s.model.slice(0, 80);
   if (typeof s.lang === "string") out.lang = s.lang.slice(0, 40);
-  if (typeof s.batchSeconds === "number") out.batchSeconds = Math.min(60, Math.max(3, Math.round(s.batchSeconds)));
+  if (typeof s.batchSeconds === "number") out.batchSeconds = Math.min(60, Math.max(0, s.batchSeconds));
   if (typeof s.notes === "string") out.notes = s.notes.slice(0, 4000);
   if (s.provider === "gemini" || s.provider === "ollama") out.provider = s.provider;
   if (s.translator === "same" || s.translator === "ollama") out.translator = s.translator;

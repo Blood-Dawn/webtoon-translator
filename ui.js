@@ -79,7 +79,7 @@
   <div class="pane on" data-pane="status">
     <div class="row"><button class="b primary" id="toggle">Turn on</button></div>
     <label for="secs">Seconds to wait before sending a batch</label>
-    <input type="number" id="secs" min="3" max="60">
+    <input type="number" id="secs" min="0" max="60" step="0.5">
     <div class="stat" id="stats" style="margin-top:10px"></div>
     <div class="row"><button class="b danger" id="clearcache">Clear translation cache</button></div>
     <div class="hint">Tip: click any translated bubble on the page to edit its text, font size or box size.</div>
@@ -114,7 +114,7 @@
   </div>
 
   <div class="pane" data-pane="images">
-    <div class="row"><button class="b primary" id="loadbatches">Show last images sent to Gemini</button></div>
+    <div class="row"><button class="b primary" id="loadbatches">Show last images sent to the reader</button></div>
     <div class="hint">The red outlines are the text boxes Gemini found. Click an image to see it larger.</div>
     <div id="batches"></div>
   </div>
@@ -189,7 +189,7 @@
   });
 
   $("secs").addEventListener("change", async () => {
-    const v = clamp(Number($("secs").value) || 10, 3, 60);
+    const v = clamp(Number($("secs").value) >= 0 && $("secs").value !== "" ? Number($("secs").value) : 10, 0, 60);
     $("secs").value = v;
     KT.settings.batchSeconds = v;
     try {
@@ -526,6 +526,7 @@
   }
 
   function scaleBox(f) {
+    ctx.b.shaped = true;
     const [y1, x1, y2, x2] = ctx.b.box_2d;
     const cy = (y1 + y2) / 2;
     const cx = (x1 + x2) / 2;
@@ -541,6 +542,7 @@
   }
 
   function nudge(dy, dx) {
+    ctx.b.shaped = true;
     const [y1, x1, y2, x2] = ctx.b.box_2d.map(Number);
     const h = y2 - y1;
     const w = x2 - x1;

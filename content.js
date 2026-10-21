@@ -294,8 +294,56 @@
     }
   }
 
+  // Readers often return a tall, narrow box around a bubble's text. English wraps badly in that shape,
+  // so a new box is reshaped once to a wider rectangle around the same center. Boxes the reader has
+  // already moved or resized (b.shaped is set by any edit) are left exactly as they are.
+  function reshape(o, it) {
+    const { b, box, span } = it;
+    if (b.shaped || b.fs) return;
+    const pw = o.img.clientWidth;
+    const ph = o.img.clientHeight;
+    const text = String(b.translation || "");
+    if (!pw || !ph || !text || !Array.isArray(b.box_2d)) return;
+    b.shaped = true;
+    const [y1, x1, y2, x2] = b.box_2d.map(Number);
+    // Gemini's boxes already follow the bubble. Only tall, narrow boxes from local models are reshaped.
+    if (!KT.settings.localReader || ((y2 - y1) / 1000) * ph < ((x2 - x1) / 1000) * pw * 1.0) return;
+    const area = Math.max(((x2 - x1) / 1000) * pw * (((y2 - y1) / 1000) * ph), 2500);
+    const chars = Math.max(text.length, 4);
+    const scale = Math.max(0.6, Math.min(1.6, pw / 700));
+    const size = Math.max(11 * scale, Math.min(30 * scale, Math.sqrt(area / (chars * 0.78))));
+    const need = chars * 0.78 * size * size;
+    let w = Math.min(pw * 0.92, Math.max(size * 6, Math.sqrt(need * 2.2)));
+    const saved = { w: box.style.width, h: box.style.height, l: box.style.left, t: box.style.top };
+    span.style.fontSize = size + "px";
+    let h = 0;
+    for (let i = 0; i < 5; i++) {
+      box.style.width = w + "px";
+      box.style.height = "auto";
+      h = box.offsetHeight + 2;
+      if (h / w <= 0.62 || w >= pw * 0.92) break;
+      w = Math.min(pw * 0.92, w * 1.15);
+    }
+    box.style.width = saved.w;
+    box.style.height = saved.h;
+    // Same center as before, nudged back inside the panel, minus the padding that geometry() adds again.
+    const cx = ((x1 + x2) / 2 / 1000) * pw;
+    const cy = ((y1 + y2) / 2 / 1000) * ph;
+    const left = Math.max(0, Math.min(pw - w, cx - w / 2));
+    const top = Math.max(0, Math.min(ph - h, cy - h / 2));
+    const pad = 6;
+    const nb = [(top / ph) * 1000 + pad, (left / pw) * 1000 + pad, ((top + h) / ph) * 1000 - pad, ((left + w) / pw) * 1000 - pad];
+    if (nb[2] > nb[0] + 5 && nb[3] > nb[1] + 5) {
+      b.box_2d = nb.map(Math.round);
+      applyGeometry(it);
+    }
+  }
+
   function fit(o) {
-    for (const it of o.items) fitItem(o, it);
+    for (const it of o.items) {
+      reshape(o, it);
+      fitItem(o, it);
+    }
   }
 
   KT.refit = (o, it) => fitItem(o, it);
@@ -381,6 +429,7 @@
             if (Math.abs(dx) + Math.abs(dy) < 5) return;
             began = true;
             dragged = true;
+            b.shaped = true;
             if (KT.ui) KT.ui.openEditor({ panel: p, b, box, span, o, it });
             start = b.box_2d.map(Number);
           }
@@ -546,8 +595,11 @@
   function schedule() {
     if (!state.enabled || state.timer || state.sending || state.pending.size === 0) return;
     const now = Date.now();
-    const windowMs = Math.max(2, Number(settings.batchSeconds) || 10) * 1000;
-    const at = Math.max(now + windowMs, state.lastSendAt + MIN_MS_BETWEEN_REQUESTS, state.cooldownUntil);
+    // A model on this computer has no request limits, so the wait can go down to nothing.
+    const secs = Number(settings.batchSeconds);
+    const windowMs = (settings.localReader ? (Number.isFinite(secs) ? Math.max(0, secs) : 0) : Math.max(2, secs || 10)) * 1000;
+    const gap = settings.localReader ? 0 : MIN_MS_BETWEEN_REQUESTS;
+    const at = Math.max(now + windowMs, state.lastSendAt + gap, state.cooldownUntil);
     state.flushAt = at;
     state.timer = setTimeout(() => {
       state.timer = null;
@@ -804,7 +856,7 @@
   try {
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area !== "local") return;
-      if (changes.batchSeconds) settings.batchSeconds = Number(changes.batchSeconds.newValue) || 10;
+      if (changes.batchSeconds) settings.batchSeconds = Number(changes.batchSeconds.newValue);
       if (changes.provider) settings.localReader = changes.provider.newValue === "ollama";
       if (changes.notes) KT.notes = changes.notes.newValue || "";
       if (changes.corrections) KT.corrections = changes.corrections.newValue || {};
@@ -823,7 +875,7 @@
       KT.glossary = Array.isArray(cfg.glossary) ? cfg.glossary : [];
       KT.editStats = cfg.editStats || {};
       saved = !!cfg.enabled;
-      settings.batchSeconds = Number(cfg.batchSeconds) || 10;
+      settings.batchSeconds = cfg.batchSeconds === undefined ? 10 : Number(cfg.batchSeconds);
       KT.notes = cfg.notes || "";
       KT.corrections = cfg.corrections || {};
     } catch (e) {
