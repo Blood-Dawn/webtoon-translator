@@ -171,7 +171,8 @@
   // Translation only, one line per request, so a translation model sees plain Korean text.
   async function translateOne(base, model, text, lang, context) {
     const content = await chat(base, model, [{ role: "user", content: translationPrompt(model, text, lang, context) }]);
-    return content.trim();
+    // Some models list several options ("Or:" between them). A bubble gets the first one only.
+    return content.split(/\n+\s*(?:or|alternatively)\s*[:,]?\s*\n/i)[0].trim();
   }
 
   // A plain question to a local model, for things like drafting a story summary.
