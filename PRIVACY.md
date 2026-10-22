@@ -35,6 +35,8 @@ The "Test my key" button sends your key to Google to check that it is valid. It 
 
 ## Local models (optional)
 
+If you press Import in the Glossary tab, the title you typed is sent to AniList's public API (`graphql.anilist.co`) to look up character names. Nothing else is sent, no cookies or key are used, and imported names wait for your review before they are used. The skip and fix rules you write in the settings stay on this computer.
+
 If you turn on a local model, the extension talks to an Ollama server on your own computer (`localhost` or `127.0.0.1` only, after you grant the browser permission). With a local translator, the Korean text of each bubble goes to that server. With a local reader, the panel images go to that server instead of to Google, and your Gemini key is not used. Ollama runs on your computer, and its own data handling is described by its developers. The extension refuses any address that is not on your own computer. Memory and story summaries are added to those requests only when a local translator or Gemini is already being asked to translate or summarize. If you choose Chrome's built-in translator, Korean text is translated by Chrome on your device and the extension sends it nowhere else.
 
 ## What the extension does not do

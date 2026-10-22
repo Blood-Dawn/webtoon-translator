@@ -69,6 +69,12 @@ const LOG = process.env.PT_LOG || path.join(__dirname, "requests.jsonl");
   check("the strip is removed", (await page.locator("#kt-strip").count()) === 0);
   check("the original page is back", (await page.evaluate(() => getComputedStyle(document.body).display)) !== "none");
 
+  const ani = await sw.evaluate(() => fetchAnilistCharacters("Test Series").then((r) => JSON.stringify(r)));
+  const aniObj = JSON.parse(ani);
+  check("AniList import keeps Korean character names only, with gender", aniObj.characters.length === 1 && aniObj.characters[0].ko === "김테스트" && aniObj.characters[0].gender === "male");
+  const rules = await sw.evaluate(() => JSON.stringify([applyRules("비밀 유지 ㅋㅋ", parseRules("비밀 유지 => 비밀유지\nㅋ+ => laugh")), parseSkips("^[ㅋㅎ]+$")[0].test("ㅋㅋ")]));
+  check("pattern rules rewrite text and skip patterns match", rules === JSON.stringify(["비밀유지 laugh", true]));
+
   await ctx.close();
   const failed = results.filter((r) => !r[1]);
   if (failed.length) {

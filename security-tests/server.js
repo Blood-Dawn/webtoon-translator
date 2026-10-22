@@ -113,6 +113,13 @@ https
         res.writeHead(200, { "content-type": "application/json", "access-control-allow-origin": "*" });
         return res.end(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify({ bubbles: boxes, terms }) }] } }] }));
       }
+      if (host === "graphql.anilist.co") {
+        res.writeHead(200, { "content-type": "application/json" });
+        return res.end(JSON.stringify({ data: { Media: { title: { romaji: "Test Series", english: "Test Series", native: "테스트" }, characters: { nodes: [
+          { gender: "Male", name: { full: "Kim Test", native: "김테스트" } },
+          { gender: "Female", name: { full: "Foreign Name", native: "テスト" } }
+        ] } } } }));
+      }
       if (host === "webtoon.kakao.com" && req.url.startsWith("/viewer")) {
         res.writeHead(200, { "content-type": "text/html" });
         return res.end(PAGE);

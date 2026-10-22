@@ -15,7 +15,7 @@
   const MAX_GLOSSARY = 500;
   const MAX_PENDING = 100;
   const MAX_CHAPTERS_TRACKED = 30;
-  const KT = (window.KT = { ui: null, settings: { batchSeconds: 10, chapterMode: false }, corrections: {}, notes: "", glossary: [], editStats: {}, MOVE_LIMIT: 3000 });
+  const KT = (window.KT = { ui: null, settings: { batchSeconds: 10, chapterMode: false, font: "comic", textScale: 1 }, corrections: {}, notes: "", glossary: [], editStats: {}, MOVE_LIMIT: 3000 });
   const settings = KT.settings;
 
   const state = {
@@ -47,6 +47,14 @@
     durations: [] // seconds per panel for recent batches, for the speed and time left estimates
   };
   KT.dbg = dbg;
+
+  const FONTS = {
+    comic: '"Comic Neue","Comic Sans MS","Segoe UI",Arial,sans-serif',
+    clean: '"Segoe UI",Roboto,Arial,sans-serif',
+    serif: 'Georgia,"Times New Roman",serif',
+    rounded: '"Nunito","Varela Round","Trebuchet MS",Arial,sans-serif'
+  };
+  const fontStack = () => FONTS[settings.font] || FONTS.comic;
 
   const safeColor = (c, fallback) => (typeof c === "string" && /^#[0-9a-f]{3,8}$/i.test(c.trim()) ? c.trim() : fallback);
   const norm = (s) => String(s || "").replace(/\s+/g, " ").trim();
@@ -348,7 +356,7 @@
     if (maxH <= 0 || maxW <= 0) return;
     if (b.fs) {
       const w = o.width > 0 ? o.width : o.img.clientWidth;
-      span.style.fontSize = Math.max(6, b.fs * w) + "px";
+      span.style.fontSize = Math.max(6, b.fs * w * settings.textScale) + "px";
       return;
     }
     // Binary search for the largest font that still fits, so a box that is resized always refills well.
@@ -358,13 +366,16 @@
     };
     let hi = Math.max(8, Math.min(maxH * 0.9, Math.max(34, (o.width > 0 ? o.width : o.img.clientWidth) * 0.07)));
     let lo = 7;
-    if (fits(hi)) return;
+    if (fits(hi)) {
+      if (settings.textScale !== 1) span.style.fontSize = Math.max(7, hi * settings.textScale) + "px";
+      return;
+    }
     while (hi - lo > 0.5) {
       const mid = (hi + lo) / 2;
       if (fits(mid)) lo = mid;
       else hi = mid;
     }
-    span.style.fontSize = lo + "px";
+    span.style.fontSize = Math.max(7, lo * settings.textScale) + "px";
   }
 
   // Readers often return a tall, narrow box around a bubble's text. English wraps badly in that shape,
@@ -451,7 +462,7 @@
         borderRadius: "8px",
         pointerEvents: "auto",
         cursor: "pointer",
-        fontFamily: '"Comic Neue","Comic Sans MS","Segoe UI",Arial,sans-serif',
+        fontFamily: fontStack(),
         fontWeight: "700",
         lineHeight: "1.12"
       });
@@ -569,7 +580,7 @@
       o.el.style.display = "none";
       return;
     }
-    o.el.style.display = state.enabled ? "" : "none";
+    o.el.style.display = state.enabled && !state.peek ? "" : "none";
     o.el.style.left = r.left + window.scrollX + "px";
     o.el.style.top = r.top + window.scrollY + "px";
     o.el.style.width = r.width + "px";
@@ -1405,8 +1416,19 @@
   KT.setEnabled = setEnabled;
 
   btn.addEventListener("click", () => setEnabled(!state.enabled));
+  const setPeek = (on) => {
+    state.peek = on;
+    for (const o of state.overlays.values()) o.el.style.display = state.enabled && !on ? "" : "none";
+  };
   window.addEventListener("keydown", (e) => {
-    if (e.altKey && e.code === "KeyT") setEnabled(!state.enabled);
+    if (!e.altKey) return;
+    if (e.code === "KeyT") setEnabled(!state.enabled);
+    else if (e.code === "KeyR" && state.enabled) KT.startPick();
+    else if (e.code === "KeyB" && state.enabled) (state.strip ? KT.exitStrip() : KT.buildStrip());
+    else if (e.code === "KeyO" && !e.repeat) setPeek(true); // hold to look at the original
+  });
+  window.addEventListener("keyup", (e) => {
+    if (e.code === "KeyO" || e.key === "Alt") setPeek(false);
   });
 
   try {
@@ -1415,6 +1437,14 @@
       if (changes.batchSeconds) settings.batchSeconds = Number(changes.batchSeconds.newValue);
       if (changes.provider) settings.localReader = changes.provider.newValue === "ollama";
       if (changes.translator) settings.translator = changes.translator.newValue;
+      if (changes.fontFamily || changes.textScale) {
+        if (changes.fontFamily) settings.font = changes.fontFamily.newValue || "comic";
+        if (changes.textScale) settings.textScale = Math.min(1.4, Math.max(0.6, Number(changes.textScale.newValue) || 1));
+        for (const o of state.overlays.values()) {
+          for (const it of o.items) it.box.style.fontFamily = fontStack();
+          fit(o);
+        }
+      }
       if (changes.chapterMode) {
         settings.chapterMode = changes.chapterMode.newValue !== false;
         if (!settings.chapterMode && state.strip) KT.exitStrip();
@@ -1433,10 +1463,12 @@
   (async () => {
     let saved = false;
     try {
-      const cfg = await chrome.storage.local.get(["enabled", "batchSeconds", "notes", "corrections", "glossary", "editStats", "provider", "summaries", "translator", "chapterMode"]);
+      const cfg = await chrome.storage.local.get(["enabled", "batchSeconds", "notes", "corrections", "glossary", "editStats", "provider", "summaries", "translator", "chapterMode", "fontFamily", "textScale"]);
       settings.localReader = cfg.provider === "ollama";
       settings.translator = cfg.translator;
       settings.chapterMode = cfg.chapterMode !== false;
+      if (typeof cfg.fontFamily === "string") settings.font = cfg.fontFamily;
+      if (Number(cfg.textScale) > 0) settings.textScale = Math.min(1.4, Math.max(0.6, Number(cfg.textScale)));
       KT.summaries = cfg.summaries && typeof cfg.summaries === "object" ? cfg.summaries : {};
       KT.glossary = Array.isArray(cfg.glossary) ? cfg.glossary : [];
       KT.editStats = cfg.editStats || {};

@@ -54,6 +54,22 @@ The gear button above EN has six tabs.
 * **Test my key** checks that Google accepts your key, without translating anything. Failures come back as plain sentences, such as "You hit Google's rate limit".
 * **Export settings** and **Import settings** back up your model, language, wait time, series notes and saved fixes to a file. The file never contains your API key.
 
+## Chapter mode and fixing missed text
+
+Chapter mode is on by default. The extension collects every panel as the chapter loads and sends nothing until you press **Build strip and translate** in the box above the EN button. It then replaces the page with one clean strip of the panels in order and translates them, nearest to your screen first. This avoids panels being skipped when you scroll back up quickly. Press **Back to the original page** to leave the strip. Panels already translated are reused from the cache for free. Turn the mode off in the Status tab to translate as you scroll instead.
+
+Every panel that is not finished shows a badge with its place in the queue and an estimate, and the box above the EN button shows the whole chapter's progress and speed.
+
+If a bubble was missed or came out wrong, press **Redo an area**, then drag a box around the text. That area is cropped, read and translated again as one bubble, and it replaces anything inside the box. Clicking a panel without dragging redoes the whole panel. Esc cancels.
+
+## Rules, look and shortcuts
+
+In the settings page you can list lines to skip (for example laughter), fix the Korean before translating, and fix the English after translating. One rule per line, written as `pattern => replacement`, using a regular expression or plain text. You can also pick a bubble font and a text size. The last few translated lines of a story are passed to the translator so the next panel continues the conversation. In the Glossary tab, Import adds character names and genders from AniList for your review.
+
+Shortcuts: Alt+T turns translating on or off, Alt+R redoes an area, Alt+B builds or leaves the strip, and holding Alt+O shows the original.
+
+See RESEARCH.md for how similar tools work and what is planned next.
+
 ## Local models with Ollama (optional)
 
 You can run a model on your own computer with [Ollama](https://ollama.com). Install it, then download a model, for example `ollama pull translategemma:12b` (8.1 GB, fits in 16 GB of video memory). Open the extension's settings page and use the **Local models** section.

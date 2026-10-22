@@ -93,6 +93,20 @@
   <div id="evalresult"></div>
 
   <h2>Memory</h2>
+  <h2>Your own rules</h2>
+  <p class="hint">One rule per line. A pattern is a regular expression, or plain text if it is not a valid one. These run on this computer only.</p>
+  <label for="skipPatterns">Skip lines that match (one pattern per line)</label>
+  <textarea id="skipPatterns" rows="3" placeholder="^[ㅋㅎㅠ]+$"></textarea>
+  <label for="preDict">Fix the Korean before translating (pattern => replacement)</label>
+  <textarea id="preDict" rows="3" placeholder="비밀 유지 => 비밀유지"></textarea>
+  <label for="postDict">Fix the English after translating (pattern => replacement)</label>
+  <textarea id="postDict" rows="3" placeholder="Okay\. => Okay"></textarea>
+  <h2>Look</h2>
+  <label for="fontFamily">Bubble font</label>
+  <select id="fontFamily"><option value="comic">Comic (default)</option><option value="clean">Clean sans serif</option><option value="serif">Serif</option><option value="rounded">Rounded</option></select>
+  <label for="textScale">Text size (percent of the automatic size)</label>
+  <input id="textScale" type="number" min="60" max="140" step="5" value="100">
+  <label class="check"><input id="secondRead" type="checkbox" checked><span>Second read<small>When the local reader finds a bubble whose text looks cut off, that bubble is cropped with extra room and read again, to catch lines the first read missed. Slower for panels with unfinished lines.</small></span></label>
   <label class="check"><input id="contextCheck" type="checkbox" checked><span>Context check<small>After the lines of a panel are translated, the local translation model reads them together and rewords any line that does not make sense in the conversation. Adds one extra request per panel.</small></span></label>
   <label class="check"><input id="useMemory" type="checkbox" checked><span>Translation memory<small>Keeps the Korean lines you have translated, and shows a few similar earlier lines to the local translation model so names and phrasing stay the same. Stored only on this computer.</small></span></label>
   <button id="clearMemory">Clear translation memory</button><span id="memorycount" style="margin-left:8px"></span>

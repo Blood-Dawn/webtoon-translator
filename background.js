@@ -148,6 +148,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       .catch((e) => sendResponse({ ok: false, error: e.message, code: e.code }));
     return true;
   }
+  if (msg.type === "anilistCharacters") {
+    fetchAnilistCharacters(msg.title)
+      .then((r) => sendResponse({ ok: true, title: r.title, characters: r.characters }))
+      .catch((e) => sendResponse({ ok: false, error: e.message }));
+    return true;
+  }
   if (msg.type === "fetchImage") {
     fetchImage(msg.url)
       .then((img) => sendResponse({ ok: true, dataUrl: "data:" + img.mime + ";base64," + img.data }))
@@ -439,10 +445,187 @@ async function summarize(previous, lines) {
   return s.slice(0, 1500);
 }
 
+// ---------- reader-defined rules ----------
+// Each line of a rules box is "pattern => replacement". A pattern is a regular expression, or plain text if it is not a valid one.
+function toRegex(pat, flags) {
+  try {
+    return new RegExp(pat, flags);
+  } catch (e) {
+    return new RegExp(pat.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), flags);
+  }
+}
+function parseRules(text) {
+  const out = [];
+  for (const line of String(text || "").split(/\n/).slice(0, 100)) {
+    const i = line.indexOf("=>");
+    if (i < 1) continue;
+    const pat = line.slice(0, i).trim();
+    if (!pat || pat.length > 200) continue;
+    out.push([toRegex(pat, "g"), line.slice(i + 2).trim().slice(0, 200)]);
+  }
+  return out;
+}
+const applyRules = (t, rules) => rules.reduce((s, [re, rep]) => s.replace(re, rep), String(t || ""));
+function parseSkips(text) {
+  return String(text || "").split(/\n/).map((l) => l.trim()).filter((l) => l && l.length <= 200).slice(0, 100).map((l) => toRegex(l, ""));
+}
+
+// The last few lines translated for a story, kept for the browsing session, so the next panel continues the conversation.
+async function getRecent(series) {
+  try {
+    const all = (await chrome.storage.session.get("recent")).recent || {};
+    return Array.isArray(all[series]) ? all[series] : [];
+  } catch (e) {
+    return [];
+  }
+}
+async function setRecent(series, lines) {
+  try {
+    const all = (await chrome.storage.session.get("recent")).recent || {};
+    all[series] = lines.slice(-8);
+    const keys = Object.keys(all);
+    if (keys.length > 5) delete all[keys[0]];
+    await chrome.storage.session.set({ recent: all });
+  } catch (e) {
+    /* continuity is optional */
+  }
+}
+
+// Character names for a series come from AniList's public database. Only the title typed by the reader is sent.
+async function fetchAnilistCharacters(title) {
+  const t = String(title || "").trim().slice(0, 120);
+  if (t.length < 2) throw new Error("Type the series title first.");
+  const query = "query ($s: String) { Media(search: $s, type: MANGA) { title { romaji english native } characters(perPage: 40, sort: ROLE) { nodes { gender name { full native } } } } }";
+  let r;
+  try {
+    r = await fetch("https://graphql.anilist.co/", {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify({ query, variables: { s: t } }),
+      credentials: "omit",
+      signal: AbortSignal.timeout(15000)
+    });
+  } catch (e) {
+    throw new Error("Could not reach AniList. Check your connection.");
+  }
+  if (r.status === 404) throw new Error("AniList has no series with that title. Try the English or romanized title.");
+  if (!r.ok) throw new Error("AniList returned an error (" + r.status + ").");
+  const j = await r.json();
+  const media = j && j.data && j.data.Media;
+  if (!media) throw new Error("AniList has no series with that title.");
+  const nodes = (media.characters && media.characters.nodes) || [];
+  const out = [];
+  for (const n of nodes) {
+    const ko = String((n.name && n.name.native) || "").trim().slice(0, 40);
+    const en = String((n.name && n.name.full) || "").trim().slice(0, 60);
+    if (!ko || !en || !countHangul(ko)) continue;
+    const g = String(n.gender || "").toLowerCase();
+    out.push({ ko, en, gender: g === "female" || g === "male" ? g : "" });
+  }
+  const names = media.title || {};
+  return { title: String(names.english || names.romaji || names.native || t).slice(0, 120), characters: out };
+}
+
+// Second read: a local reader often finds only the first line of a bubble. Any bubble whose text looks cut off
+// is cropped with extra room around it and read again. If the crop holds more Korean next to it, that longer
+// text replaces the first reading.
+const HANGUL_RE = /[가-힣]/g;
+const countHangul = (t) => (String(t || "").match(HANGUL_RE) || []).length;
+const looksCut = (t) => !/[.?!…~。！？"'”’」』)]\s*$/.test(String(t || "").trim());
+const MAX_SECOND_READS = 6;
+
+async function toBase64(blob) {
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  let s = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+
+async function secondRead(cfg, img, bubbles, lang, alsoTranslate) {
+  const bmp = await createImageBitmap(await (await fetch("data:" + img.mime + ";base64," + img.data)).blob());
+  const W = bmp.width;
+  const H = bmp.height;
+  const out = bubbles.slice();
+  const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+  let used = 0;
+  try {
+    for (let i = 0; i < out.length && used < MAX_SECOND_READS; i++) {
+      const b = out[i];
+      if (!Array.isArray(b.box_2d) || b.box_2d.length !== 4 || !countHangul(b.original) || !looksCut(b.original)) continue;
+      used++;
+      try {
+        const [y1, x1, y2, x2] = b.box_2d.map(Number);
+        const bw = ((x2 - x1) / 1000) * W;
+        const bh = ((y2 - y1) / 1000) * H;
+        const padX = Math.max(bw * 0.35, W * 0.04);
+        const padY = Math.max(bh * 0.6, H * 0.03);
+        const cx1 = Math.round(clamp((x1 / 1000) * W - padX, 0, W));
+        const cy1 = Math.round(clamp((y1 / 1000) * H - padY, 0, H));
+        const cx2 = Math.round(clamp((x2 / 1000) * W + padX, 0, W));
+        const cy2 = Math.round(clamp((y2 / 1000) * H + padY, 0, H));
+        const cw = cx2 - cx1;
+        const ch = cy2 - cy1;
+        if (cw < 16 || ch < 16) continue;
+        const scale = Math.min(Math.max(1, 448 / Math.min(cw, ch)), 1600 / Math.max(cw, ch));
+        const w = Math.max(16, Math.round(cw * scale));
+        const h = Math.max(16, Math.round(ch * scale));
+        const canvas = new OffscreenCanvas(w, h);
+        canvas.getContext("2d").drawImage(bmp, cx1, cy1, cw, ch, 0, 0, w, h);
+        const data = await toBase64(await canvas.convertToBlob({ type: "image/jpeg", quality: 0.92 }));
+        const prompt =
+          "This image is a crop around a speech bubble, " + w + " pixels wide and " + h + " pixels tall. Find every line of Korean text in it, including lines that are small or partly cut off. " +
+          "For each separate bubble or text block give bbox_2d as [x1, y1, x2, y2] in pixels and copy ALL of its lines in reading order, exactly, into original. " +
+          (alsoTranslate ? "Translate it into " + lang + " in translation. " : "Copy the same Korean into translation, which is translated later. ") +
+          "Give bg and fg as hex colors for the bubble background and the text.";
+        const r = await Ollama.read(cfg.ollamaUrl, cfg.ollamaReader, data, prompt, { w, h });
+        // Map the crop's boxes back onto the whole panel (0 to 1000 scale).
+        const toPage = (v, o, span, full) => Math.round(clamp(((o + (v / 1000) * span) / full) * 1000, 0, 1000));
+        const found = [];
+        for (const c of r.bubbles) {
+          if (!countHangul(c.original) || !Array.isArray(c.box_2d)) continue;
+          const [a1, a2, a3, a4] = c.box_2d.map(Number);
+          const m = [toPage(a1, cy1, ch, H), toPage(a2, cx1, cw, W), toPage(a3, cy1, ch, H), toPage(a4, cx1, cw, W)];
+          // Only text that sits in the same column and right next to this bubble belongs to it.
+          const ow = Math.min(m[3], x2) - Math.max(m[1], x1);
+          const minW = Math.min(m[3] - m[1], x2 - x1);
+          const gap = Math.max(m[0], y1) - Math.min(m[2], y2);
+          const lineH = Math.max(m[2] - m[0], y2 - y1);
+          if (minW <= 0 || ow < minW * 0.3 || gap > lineH * 0.8) continue;
+          // Text that belongs to a different bubble the reader already found is left alone.
+          const other = out.some((o, j) => {
+            if (j === i || !Array.isArray(o.box_2d)) return false;
+            const cx = (m[1] + m[3]) / 2;
+            const cy = (m[0] + m[2]) / 2;
+            return cx >= o.box_2d[1] && cx <= o.box_2d[3] && cy >= o.box_2d[0] && cy <= o.box_2d[2];
+          });
+          if (other) continue;
+          found.push(Object.assign({}, c, { box_2d: m }));
+        }
+        if (!found.length) continue;
+        found.sort((p, q) => p.box_2d[0] - q.box_2d[0] || p.box_2d[1] - q.box_2d[1]);
+        const join = (k) => found.map((f) => String(f[k] || "").trim()).filter(Boolean).join(" ");
+        const text = join("original");
+        if (countHangul(text) < countHangul(b.original) + 2) continue;
+        const boxes = found.map((f) => f.box_2d).concat([b.box_2d.map(Number)]);
+        out[i] = Object.assign({}, b, {
+          original: text,
+          translation: alsoTranslate ? join("translation") || text : text,
+          box_2d: [Math.min(...boxes.map((q) => q[0])), Math.min(...boxes.map((q) => q[1])), Math.max(...boxes.map((q) => q[2])), Math.max(...boxes.map((q) => q[3]))]
+        });
+      } catch (e) {
+        /* this bubble keeps its first reading */
+      }
+    }
+  } finally {
+    bmp.close();
+  }
+  return Ollama.mergeFragments(out);
+}
+
 async function translate(url, dataUrl, panels, series, region) {
   const cfg = await chrome.storage.local.get([
     "model", "lang", "notes", "corrections", "keepDebug", "glossary",
-    "provider", "ollamaUrl", "ollamaReader", "translator", "ollamaTranslator", "summaries", "useMemory", "contextCheck"
+    "provider", "ollamaUrl", "ollamaReader", "translator", "ollamaTranslator", "summaries", "useMemory", "contextCheck", "secondRead", "preDict", "postDict", "skipPatterns"
   ]);
   const seriesKey = String(series || "").slice(0, 80);
   const summary = cfg.summaries && typeof cfg.summaries === "object" ? String(cfg.summaries[seriesKey] || "") : "";
@@ -513,7 +696,23 @@ async function translate(url, dataUrl, panels, series, region) {
     bubbles = [Object.assign({}, sorted[0], { original: joined("original"), translation: joined("translation"), box_2d: box })];
   }
   const terms = cleanTerms(read.terms);
+  if (localReader && !region && cfg.secondRead !== false && bubbles.length) {
+    try {
+      bubbles = await secondRead(cfg, img, bubbles, lang, !(cfg.translator === "ollama" && cfg.ollamaTranslator));
+    } catch (e) {
+      /* the first reading stays */
+    }
+  }
   let warning = "";
+
+  // The reader's own rules: lines to skip, and fixes to the Korean before it is translated.
+  const skips = parseSkips(cfg.skipPatterns);
+  if (skips.length) bubbles = bubbles.filter((x) => !skips.some((re) => re.test(String(x.original || ""))));
+  const pre = parseRules(cfg.preDict);
+  if (pre.length) bubbles = bubbles.map((x) => Object.assign({}, x, { original: applyRules(x.original, pre) }));
+  const post = parseRules(cfg.postDict);
+  const recent = await getRecent(seriesKey);
+  const recentBlock = recent.length ? "Lines just before this panel, for continuity:\n" + recent.map((e) => e.ko + " => " + e.en).join("\n") : "";
 
   // Optional second step: a translation model on this computer rewrites each line from the Korean text.
   // If it fails, the reader's own translation stays, so a local problem never blanks the page.
@@ -522,7 +721,7 @@ async function translate(url, dataUrl, panels, series, region) {
       const norm = (s) => String(s || "").replace(/\s+/g, " ").trim();
       const fixes = cfg.corrections || {};
       const tmList = useMemory ? await TM.load() : [];
-      const base = contextBlock(cfg.notes, glossary, summary);
+      const base = [contextBlock(cfg.notes, glossary, summary), recentBlock].filter(Boolean).join("\n\n");
       // A line the reader already corrected is used as they wrote it. The model sees only the other lines,
       // each with a few similar earlier lines as examples of the wording to keep.
       const source = bubbles.map((b) => (Object.prototype.hasOwnProperty.call(fixes, norm(b.original)) ? "" : b.original));
@@ -556,6 +755,12 @@ async function translate(url, dataUrl, panels, series, region) {
     } catch (e) {
       warning = "The local translator did not work, so the reader's own translation is shown. " + e.message;
     }
+  }
+
+  if (post.length) bubbles = bubbles.map((x) => Object.assign({}, x, { translation: applyRules(x.translation, post) }));
+  if (seriesKey) {
+    const spoken = bubbles.filter((x) => countHangul(x.original)).sort((p, q) => (p.box_2d ? p.box_2d[0] : 0) - (q.box_2d ? q.box_2d[0] : 0));
+    if (spoken.length) await setRecent(seriesKey, recent.concat(spoken.map((x) => ({ ko: String(x.original).slice(0, 120), en: String(x.translation).slice(0, 160) }))));
   }
 
   // Remember what was said, so later similar lines can reuse the wording. Stays on this computer.

@@ -33,6 +33,10 @@ function startFakeOllama() {
         }
         if (req.url === "/api/chat") {
           if (body.includes('"images"')) {
+            if (body.includes("a crop around")) {
+              const more = { bubbles: [{ bbox_2d: [10, 10, 300, 200], original: "안녕 반갑습니다", translation: "Hello from local, nice to meet you", bg: "#ffffff", fg: "#111111" }], terms: [] };
+              return send(200, { message: { content: JSON.stringify(more) } });
+            }
             const reply = { bubbles: [{ box_2d: [100, 100, 300, 600], original: "안녕", translation: "Hello from local", bg: "#ffffff", fg: "#111111" }], terms: [] };
             return send(200, { message: { content: JSON.stringify(reply) } });
           }
@@ -144,7 +148,8 @@ const geminiCount = () => fs.readFileSync(LOG, "utf8").split("\n").filter((l) =>
   await pageB.goto("https://webtoon.kakao.com/viewer/test");
   await pageB.waitForTimeout(22000);
   const tB = await cachedTranslations(b.sw);
-  check("with a local reader, translation works with no API key and no Gemini request", tB.includes("Hello from local") && geminiCount() === geminiBeforeB);
+  check("with a local reader, translation works with no API key and no Gemini request", tB.some((x) => String(x).startsWith("Hello from local")) && geminiCount() === geminiBeforeB);
+  check("a bubble that looks cut off is read a second time and the longer text is kept", tB.some((x) => /nice to meet you/.test(String(x))));
   const imageChats = ollamaLog.filter((e) => e.url === "/api/chat" && e.hasImages);
   check("panel images went to the local server", imageChats.length >= 1);
   check("no request to the local server carried a browser origin", ollamaLog.length > 0 && ollamaLog.every((e) => e.origin === null));

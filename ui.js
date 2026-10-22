@@ -103,6 +103,9 @@
     <div class="hint" id="glosscount"></div>
     <div id="glosspending"></div>
     <div id="glossapproved"></div>
+    <label>Import characters from AniList</label>
+    <div class="row add"><input type="text" id="anititle" placeholder="Series title"><button class="b" id="aniimport">Import</button></div>
+    <div class="hint" id="aniresult"></div>
     <label>Add an entry</label>
     <div class="row add"><input type="text" id="gko" placeholder="Korean"><input type="text" id="gen" placeholder="English"></div>
     <div class="row add">
@@ -458,6 +461,27 @@
     row.appendChild(actions);
     return row;
   }
+
+  $("aniimport").addEventListener("click", async () => {
+    const out = $("aniresult");
+    out.textContent = "Looking it up.";
+    try {
+      const res = await chrome.runtime.sendMessage({ type: "anilistCharacters", title: $("anititle").value });
+      if (!res || !res.ok) throw new Error((res && res.error) || "Import failed.");
+      const series = KT.seriesKey();
+      let added = 0;
+      for (const c of res.characters) {
+        if (KT.glossary.some((g) => g.ko === c.ko && (g.series === series || g.series === ""))) continue;
+        KT.glossary.push({ ko: c.ko, en: c.en, type: "character", gender: c.gender, status: "pending", series, n: 0, t: Date.now() });
+        added++;
+      }
+      KT.saveGlossary();
+      renderGlossary();
+      out.textContent = res.characters.length ? "Found " + res.title + ". Added " + added + " characters for your review below." : "Found " + res.title + ", but it lists no Korean character names.";
+    } catch (e) {
+      out.textContent = e.message || String(e);
+    }
+  });
 
   function renderGlossary() {
     const series = KT.seriesKey();
