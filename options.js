@@ -1,5 +1,5 @@
 const $ = (id) => document.getElementById(id);
-const BACKUP_KEYS = ["model", "lang", "batchSeconds", "notes", "corrections", "glossary", "provider", "ollamaUrl", "ollamaReader", "translator", "ollamaTranslator", "useMemory", "summaries"];
+const BACKUP_KEYS = ["model", "lang", "batchSeconds", "notes", "corrections", "glossary", "provider", "ollamaUrl", "ollamaReader", "translator", "ollamaTranslator", "useMemory", "contextCheck", "summaries"];
 const LOCAL_URL = /^http:\/\/(localhost|127\.0\.0\.1)(:\d{1,5})?\/?$/;
 const DEFAULT_OLLAMA = "http://localhost:11434";
 
@@ -45,10 +45,11 @@ function showTest(ok, text) {
 (async () => {
   // Older versions kept the key in regular extension storage. Move it into private storage.
   await Secrets.migrate().catch(() => {});
-  const cfg = await chrome.storage.local.get(["model", "lang", "batchSeconds", "keepDebug", "provider", "ollamaUrl", "ollamaReader", "translator", "ollamaTranslator", "useMemory"]);
+  const cfg = await chrome.storage.local.get(["model", "lang", "batchSeconds", "keepDebug", "provider", "ollamaUrl", "ollamaReader", "translator", "ollamaTranslator", "useMemory", "contextCheck"]);
   $("provider").value = cfg.provider === "ollama" ? "ollama" : "gemini";
   $("translator").value = cfg.translator === "ollama" || cfg.translator === "chrome" ? cfg.translator : "same";
   $("useMemory").checked = cfg.useMemory !== false;
+  $("contextCheck").checked = cfg.contextCheck !== false;
   $("ollamaUrl").value = cfg.ollamaUrl || DEFAULT_OLLAMA;
   $("ollamaReader").value = cfg.ollamaReader || "";
   $("ollamaTranslator").value = cfg.ollamaTranslator || "";
@@ -89,6 +90,7 @@ $("save").addEventListener("click", async () => {
     provider: $("provider").value === "ollama" ? "ollama" : "gemini",
     translator: ["ollama", "chrome"].includes($("translator").value) ? $("translator").value : "same",
     useMemory: $("useMemory").checked,
+    contextCheck: $("contextCheck").checked,
     ollamaUrl: url,
     ollamaReader: $("ollamaReader").value.trim().slice(0, 100),
     ollamaTranslator: $("ollamaTranslator").value.trim().slice(0, 100)
@@ -206,6 +208,7 @@ function cleanBackup(obj) {
   if (s.provider === "gemini" || s.provider === "ollama") out.provider = s.provider;
   if (s.translator === "same" || s.translator === "ollama" || s.translator === "chrome") out.translator = s.translator;
   if (typeof s.useMemory === "boolean") out.useMemory = s.useMemory;
+  if (typeof s.contextCheck === "boolean") out.contextCheck = s.contextCheck;
   if (s.summaries && typeof s.summaries === "object" && !Array.isArray(s.summaries)) {
     const m = {};
     for (const [k, v] of Object.entries(s.summaries).slice(0, 40)) if (typeof v === "string" && k.length <= 80) m[k] = v.slice(0, 1500);

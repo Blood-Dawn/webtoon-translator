@@ -27,7 +27,10 @@
     timer: null,
     flushAt: 0,
     lastSendAt: 0,
-    cooldownUntil: 0
+    cooldownUntil: 0,
+    strip: null, // the clean strip view while it is shown
+    seq: 0,
+    doneAt: 0
   };
   KT.state = state;
 
@@ -40,7 +43,8 @@
     error: 0,
     lastErr: "",
     lastBoxes: "-",
-    lastBatch: "-"
+    lastBatch: "-",
+    durations: [] // seconds per panel for recent batches, for the speed and time left estimates
   };
   KT.dbg = dbg;
 
@@ -615,6 +619,8 @@
       const px = await readPanelPixels(p.img);
       p.dataUrl = px.dataUrl;
       p.source = px.source;
+      // Chapter mode needs the pixels again to build the strip, even for panels that are already translated.
+      if (settings.chapterMode) p.keep = px.dataUrl;
       p.key = "c:h" + hashStr(px.dataUrl);
       const hit = (await chrome.storage.local.get(p.key))[p.key];
       if (hit !== undefined) {
@@ -638,15 +644,27 @@
     }
   }
 
+  const docY = (img) => Math.round(img.getBoundingClientRect().top + window.scrollY);
+  const orderCmp = (a, b) => a.pos - b.pos || a.seq - b.seq;
+
   function enqueue(img) {
+    if (img.dataset && img.dataset.ktStrip) return;
     const src = img.currentSrc || img.src;
     if (!src) return;
     const known = state.panels.get(src);
     if (known) {
+      if (known.strip) return;
       if (known.img !== img && !known.img.isConnected) {
         known.img = img;
         if (known.status === "done" && known.boxes) render(known);
+        // A panel that was waiting when its image went away is queued again instead of being forgotten.
+        if (known.status === "pending" || known.status === "error") {
+          known.status = "pending";
+          state.pending.add(known);
+          schedule();
+        }
       }
+      if (known.img.isConnected) known.pos = docY(known.img);
       return;
     }
     if (!img.complete || !img.naturalWidth) {
@@ -658,13 +676,17 @@
       dbg.tooSmall++;
       return;
     }
-    const p = { img, src, status: "prep", key: null, dataUrl: null, source: null, boxes: null };
+    const p = { img, src, status: "prep", key: null, dataUrl: null, source: null, boxes: null, keep: null, pos: docY(img), seq: state.seq++, tries: 0 };
     state.panels.set(src, p);
     preparePanel(p);
   }
 
+  // Chapter mode collects panels first. Nothing is sent until the strip is built.
+  const holding = () => !!settings.chapterMode && !state.strip;
+
   function schedule() {
     if (!state.enabled || state.timer || state.sending || state.pending.size === 0) return;
+    if (holding()) return; // chapter mode waits for the reader to press the button
     const now = Date.now();
     // A model on this computer has no request limits, so the wait can go down to nothing.
     const secs = Number(settings.batchSeconds);
@@ -685,8 +707,9 @@
       const r = p.img.getBoundingClientRect();
       return Math.abs(r.top + r.height / 2 - mid);
     };
+    // A panel whose image is not on the page right now stays queued and is picked up when it is back.
     const list = Array.from(state.pending).filter((p) => p.status === "pending" && p.img.isConnected);
-    for (const p of Array.from(state.pending)) if (!list.includes(p)) state.pending.delete(p);
+    for (const p of Array.from(state.pending)) if (p.status !== "pending") state.pending.delete(p);
     list.sort((a, b) => dist(a) - dist(b)); // what you are reading goes first
     const chosen = [];
     let height = 0;
@@ -784,11 +807,13 @@
   }
 
   async function flush() {
-    if (!state.enabled || state.sending) return;
+    if (!state.enabled || state.sending || holding()) return;
     const chosen = pickBatch();
     if (!chosen.length) return;
     state.sending = true;
     state.lastSendAt = Date.now();
+    const startedAt = Date.now();
+    state.batchStart = startedAt;
     for (const p of chosen) {
       p.status = "sending";
       state.pending.delete(p);
@@ -811,6 +836,8 @@
       }
       dbg.batches++;
       dbg.panelsSent += chosen.length;
+      dbg.durations.push((Date.now() - startedAt) / 1000 / chosen.length);
+      if (dbg.durations.length > 12) dbg.durations.shift();
       if (res.warning) toast(res.warning);
       if (settings.translator === "chrome") await chromeTranslate(res.boxes);
       countUsage(res.boxes);
@@ -831,9 +858,10 @@
         p.status = "done";
         p.boxes = perPanel[i];
         p.dataUrl = null;
-        p.source = null;
+        if (!p.strip) p.source = null;
         render(p);
       });
+      state.doneAt = Date.now();
       dbg.lastBoxes = res.boxes.length + " text boxes in " + chosen.length + " panels";
       console.log("[webtoon-translator] result:", dbg.lastBoxes);
     } catch (e) {
@@ -845,6 +873,11 @@
       for (const p of chosen) {
         if (p.status !== "sending") continue;
         if (limited) {
+          p.status = "pending";
+          state.pending.add(p);
+        } else if (e.code !== "DAILY_QUOTA" && e.code !== "NO_KEY" && (p.tries || 0) < 2) {
+          // One or two more tries for a panel that failed for a passing reason.
+          p.tries = (p.tries || 0) + 1;
           p.status = "pending";
           state.pending.add(p);
         } else {
@@ -903,6 +936,120 @@
     attributeFilter: ["src"]
   });
 
+  // ---------- progress: how long until each panel on screen is translated ----------
+  const avgSecs = () => (dbg.durations.length ? dbg.durations.reduce((a, b) => a + b, 0) / dbg.durations.length : 0);
+  const fmtSecs = (s) => {
+    s = Math.max(1, Math.round(s));
+    if (s < 60) return s + " s";
+    const m = Math.floor(s / 60);
+    return m + " min" + (s % 60 ? " " + (s % 60) + " s" : "");
+  };
+
+  // Seconds until each queued panel is finished, in the order they will be sent (closest to the middle of the screen first).
+  function etaMap() {
+    const avg = avgSecs();
+    const now = Date.now();
+    const mid = window.innerHeight / 2;
+    const dist = (p) => {
+      const r = p.img.getBoundingClientRect();
+      return Math.abs(r.top + r.height / 2 - mid);
+    };
+    const queue = Array.from(state.pending).filter((p) => p.status === "pending" && p.img.isConnected).sort((a, b) => dist(a) - dist(b));
+    const rem = state.sending && state.batchStart ? Math.max(0, avg - (now - state.batchStart) / 1000) : 0;
+    let wait = 0;
+    if (!state.sending && state.flushAt) wait = Math.max(0, (state.flushAt - now) / 1000);
+    if (state.cooldownUntil > now) wait = Math.max(wait, (state.cooldownUntil - now) / 1000);
+    const m = new Map();
+    queue.forEach((p, i) => m.set(p, { pos: i + 1, secs: avg ? rem + wait + (i + 1) * avg : 0 }));
+    return { m, avg, rem, queued: queue.length };
+  }
+
+  function badgeText(p, info) {
+    if (p.status === "done") return "";
+    if (p.status === "prep") return "Reading this panel";
+    if (p.status === "error") return "Failed, retrying when you scroll back";
+    if (p.status === "sending") {
+      const avg = avgSecs();
+      if (!avg) return "Translating this panel now";
+      const left = avg - (Date.now() - state.batchStart) / 1000;
+      return left > 1 ? "Translating now, about " + fmtSecs(left) + " left" : "Translating now, almost done";
+    }
+    if (!state.enabled) return "";
+    const q = info.m.get(p);
+    if (!q) return "Waiting";
+    if (!info.avg) return "Queued, number " + q.pos + ". Timing starts after the first panel.";
+    return "Queued, number " + q.pos + ". Ready in about " + fmtSecs(q.secs);
+  }
+
+  const badges = new Map(); // panel -> element
+  const pill = document.createElement("div");
+  Object.assign(pill.style, {
+    position: "fixed", right: "16px", bottom: "72px", width: "230px", padding: "8px 10px", background: "rgba(20,20,20,.92)", color: "#fff",
+    font: "12px/1.35 Arial, sans-serif", borderRadius: "8px", zIndex: "2147483647", display: "none", pointerEvents: "none"
+  });
+  const pillText = document.createElement("div");
+  const pillBar = document.createElement("div");
+  const pillFill = document.createElement("div");
+  Object.assign(pillBar.style, { height: "6px", background: "#444", borderRadius: "3px", marginTop: "6px", overflow: "hidden" });
+  Object.assign(pillFill.style, { height: "100%", width: "0%", background: "#4ade80", transition: "width .3s" });
+  pillBar.appendChild(pillFill);
+  pill.append(pillText, pillBar);
+
+  function progressTick() {
+    if (!pill.isConnected) document.documentElement.appendChild(pill);
+    if (!state.enabled) {
+      pill.style.display = "none";
+      for (const el of badges.values()) el.remove();
+      badges.clear();
+      return;
+    }
+    const info = etaMap();
+    let total = 0;
+    let done = 0;
+    let working = 0;
+    for (const p of state.panels.values()) {
+      if (p.strip && !state.strip) continue;
+      total++;
+      if (p.status === "done") done++;
+      else if (p.status !== "error") working++;
+    }
+    pill.style.display = total ? "block" : "none";
+    const left = working && info.avg ? " , about " + fmtSecs(working * info.avg + info.rem) + " left" : "";
+    pillText.textContent = done + " of " + total + " panels translated" + (info.avg ? ", " + info.avg.toFixed(1) + " s per panel" : ", measuring speed") + left.replace(" ,", ",");
+    pillFill.style.width = total ? Math.round((done / total) * 100) + "%" : "0%";
+
+    const vh = window.innerHeight;
+    const live = new Set();
+    for (const p of state.panels.values()) {
+      if (p.status === "done" || !p.img || !p.img.isConnected) continue;
+      const r = p.img.getBoundingClientRect();
+      if (r.width < 10 || r.bottom < 40 || r.top > vh - 40) continue;
+      const text = badgeText(p, info);
+      if (!text) continue;
+      live.add(p);
+      let el = badges.get(p);
+      if (!el) {
+        el = document.createElement("div");
+        Object.assign(el.style, {
+          position: "fixed", padding: "6px 10px", background: "rgba(20,20,20,.88)", color: "#fff", font: "600 13px/1.3 Arial, sans-serif",
+          borderRadius: "999px", zIndex: "2147483200", pointerEvents: "none", boxShadow: "0 2px 8px rgba(0,0,0,.4)", maxWidth: "70vw"
+        });
+        document.documentElement.appendChild(el);
+        badges.set(p, el);
+      }
+      el.textContent = text;
+      el.style.left = Math.max(8, r.left + 8) + "px";
+      el.style.top = Math.max(r.top, 0) + 10 + "px";
+    }
+    for (const [p, el] of Array.from(badges)) {
+      if (!live.has(p)) {
+        el.remove();
+        badges.delete(p);
+      }
+    }
+  }
+  setInterval(progressTick, 400);
+
   // ---------- status text for the GUI ----------
   KT.statsText = () => {
     let done = 0;
@@ -915,6 +1062,7 @@
     return (
       "panels found: " + state.panels.size + "   translated: " + done + "\n" +
       "waiting for batch: " + state.pending.size + "   " + next + "\n" +
+      "speed: " + (avgSecs() ? avgSecs().toFixed(1) + " s per panel" : "not measured yet") + "\n" +
       "from cache (free): " + dbg.cacheHits + "\n" +
       "requests sent: " + dbg.batches + "   panels sent: " + dbg.panelsSent + "\n" +
       "last batch: " + dbg.lastBatch + "\n" +

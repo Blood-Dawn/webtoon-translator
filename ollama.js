@@ -149,6 +149,75 @@
   const HANGUL = /[ᄀ-ᇿ㄰-㆏가-힣]/;
   const CHATTER = /(provide|share|send|paste|give me)\b[^.\n]{0,40}\b(korean|text)|i (need|will|can) (the|do|help|translate)|absolutely[.!]|korean text you/i;
 
+  // A local reader often returns one box per line of a bubble. Translating the lines apart gives broken wording,
+  // so boxes that are stacked in the same bubble are joined into one before translation. Boxes use the
+  // 0 to 1000 [ymin, xmin, ymax, xmax] scale.
+  function mergeFragments(bubbles) {
+    const list = bubbles.filter((b) => Array.isArray(b.box_2d) && b.box_2d.length === 4).map((b) => Object.assign({}, b, { box_2d: b.box_2d.map(Number) }));
+    const rest = bubbles.filter((b) => !(Array.isArray(b.box_2d) && b.box_2d.length === 4));
+    const joinable = (a, b) => {
+      if (!HANGUL.test(a.original || "") || !HANGUL.test(b.original || "")) return false;
+      const [ay1, ax1, ay2, ax2] = a.box_2d;
+      const [by1, bx1, by2, bx2] = b.box_2d;
+      const ow = Math.min(ax2, bx2) - Math.max(ax1, bx1);
+      const minW = Math.min(ax2 - ax1, bx2 - bx1);
+      if (minW <= 0 || ow < minW * 0.5) return false;
+      const gap = Math.max(ay1, by1) - Math.min(ay2, by2);
+      const lineH = Math.max(ay2 - ay1, by2 - by1);
+      return gap <= lineH * 0.6;
+    };
+    let changed = true;
+    while (changed) {
+      changed = false;
+      list.sort((a, b) => a.box_2d[0] - b.box_2d[0]);
+      for (let i = 0; i < list.length && !changed; i++) {
+        for (let j = i + 1; j < list.length; j++) {
+          if (!joinable(list[i], list[j])) continue;
+          const a = list[i];
+          const b = list[j];
+          const first = a.box_2d[0] <= b.box_2d[0] ? a : b;
+          const second = first === a ? b : a;
+          const join = (x, y) => [x, y].map((t) => String(t || "").trim()).filter(Boolean).join(" ");
+          list[i] = Object.assign({}, first, {
+            original: join(first.original, second.original),
+            translation: join(first.translation, second.translation),
+            box_2d: [Math.min(a.box_2d[0], b.box_2d[0]), Math.min(a.box_2d[1], b.box_2d[1]), Math.max(a.box_2d[2], b.box_2d[2]), Math.max(a.box_2d[3], b.box_2d[3])]
+          });
+          list.splice(j, 1);
+          changed = true;
+          break;
+        }
+      }
+    }
+    return list.concat(rest);
+  }
+
+  // Second pass: the translation model reads the whole panel's lines together, in order, and fixes any line
+  // that does not make sense in context. It must answer with exactly one numbered line per input line,
+  // otherwise the first draft is kept.
+  async function polish(rawUrl, model, items, lang, context) {
+    if (!Array.isArray(items) || items.length < 2) return items.map((i) => i.en);
+    const base = baseUrl(rawUrl);
+    const body = items.map((it, n) => (n + 1) + ". Korean: " + it.ko + "\n   Draft: " + it.en).join("\n");
+    const prompt =
+      "These are the lines of one comic panel, in reading order. Each has the Korean original and a draft " + lang + " translation.\n" +
+      "Check every draft against the Korean and the lines around it. Fix any line that is wrong, stiff, or does not make sense in the conversation. Keep lines that are already good exactly as they are. Keep names consistent.\n" +
+      (context ? context + "\n" : "") +
+      "Answer with exactly " + items.length + " lines in the form \"N. text\", and nothing else.\n\n" + body;
+    const out = await chat(base, model, [{ role: "user", content: prompt }]);
+    const got = new Array(items.length).fill(null);
+    for (const line of out.split(/\n+/)) {
+      const m = line.match(/^\s*(\d+)[.)]\s*(.+)$/);
+      if (!m) continue;
+      const idx = Number(m[1]) - 1;
+      const t = m[2].replace(/^(korean|draft|english)\s*:\s*/i, "").trim();
+      if (idx >= 0 && idx < items.length && t && !CHATTER.test(t) && got[idx] === null) got[idx] = t;
+    }
+    // A reply that did not cover every line is not trusted at all.
+    if (got.some((t) => t === null)) return items.map((i) => i.en);
+    return got.map((t, i) => (HANGUL.test(items[i].ko) ? t : items[i].en));
+  }
+
   // Different translation models expect different instructions. Hunyuan-MT models are trained on a short
   // plain request, TranslateGemma on a longer professional translator template. Anything else gets the
   // longer template too, which general chat models follow well.
@@ -209,5 +278,5 @@
     return { lines: out, failed };
   }
 
-  g.Ollama = { DEFAULT_URL, baseUrl, permissionPattern, listModels, read, translateLines, ask, styleFor };
+  g.Ollama = { DEFAULT_URL, baseUrl, permissionPattern, listModels, read, translateLines, ask, styleFor, mergeFragments, polish };
 })(self);

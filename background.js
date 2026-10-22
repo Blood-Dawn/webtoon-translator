@@ -442,7 +442,7 @@ async function summarize(previous, lines) {
 async function translate(url, dataUrl, panels, series) {
   const cfg = await chrome.storage.local.get([
     "model", "lang", "notes", "corrections", "keepDebug", "glossary",
-    "provider", "ollamaUrl", "ollamaReader", "translator", "ollamaTranslator", "summaries", "useMemory"
+    "provider", "ollamaUrl", "ollamaReader", "translator", "ollamaTranslator", "summaries", "useMemory", "contextCheck"
   ]);
   const seriesKey = String(series || "").slice(0, 80);
   const summary = cfg.summaries && typeof cfg.summaries === "object" ? String(cfg.summaries[seriesKey] || "") : "";
@@ -500,7 +500,7 @@ async function translate(url, dataUrl, panels, series) {
   const read = localReader
     ? await Ollama.read(cfg.ollamaUrl, cfg.ollamaReader, img.data, prompt, size)
     : await callGemini(apiKey, model, img.mime, img.data, prompt);
-  let bubbles = read.bubbles;
+  let bubbles = localReader ? Ollama.mergeFragments(read.bubbles) : read.bubbles;
   const terms = cleanTerms(read.terms);
   let warning = "";
 
@@ -529,6 +529,18 @@ async function translate(url, dataUrl, panels, series) {
         fallback
       );
       bubbles = bubbles.map((b, i) => Object.assign({}, b, { translation: r.lines[i] }));
+      // Context check: the panel's lines are read together and any line that does not fit the conversation is reworded.
+      if (cfg.contextCheck !== false && bubbles.length > 1) {
+        try {
+          const ordered = bubbles.map((b, i) => ({ i, y: Array.isArray(b.box_2d) ? b.box_2d[0] : 0 })).sort((a, b) => a.y - b.y);
+          const fixed = await Ollama.polish(cfg.ollamaUrl, cfg.ollamaTranslator, ordered.map((o) => ({ ko: bubbles[o.i].original, en: bubbles[o.i].translation })), lang, base);
+          ordered.forEach((o, n) => {
+            if (!Object.prototype.hasOwnProperty.call(fixes, norm(bubbles[o.i].original))) bubbles[o.i] = Object.assign({}, bubbles[o.i], { translation: fixed[n] });
+          });
+        } catch (e) {
+          /* the first draft stays */
+        }
+      }
       if (r.failed) warning = r.failed + " line(s) could not be translated locally and keep the reader's wording.";
     } catch (e) {
       warning = "The local translator did not work, so the reader's own translation is shown. " + e.message;
