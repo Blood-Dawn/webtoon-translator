@@ -218,6 +218,12 @@
     return got.map((t, i) => (HANGUL.test(items[i].ko) ? t : items[i].en));
   }
 
+  // Plain reading of one cropped bubble: the model answers with the Korean text only.
+  async function ocr(rawUrl, model, base64, prompt) {
+    const out = await chat(baseUrl(rawUrl), model, [{ role: "user", content: prompt, images: [base64] }]);
+    return String(out || "").replace(/^```[a-z]*\s*/i, "").replace(/```\s*$/, "").trim();
+  }
+
   // Different translation models expect different instructions. Hunyuan-MT models are trained on a short
   // plain request, TranslateGemma on a longer professional translator template. Anything else gets the
   // longer template too, which general chat models follow well.
@@ -278,5 +284,5 @@
     return { lines: out, failed };
   }
 
-  g.Ollama = { DEFAULT_URL, baseUrl, permissionPattern, listModels, read, translateLines, ask, styleFor, mergeFragments, polish };
+  g.Ollama = { DEFAULT_URL, baseUrl, permissionPattern, listModels, read, translateLines, ask, styleFor, mergeFragments, polish, ocr };
 })(self);

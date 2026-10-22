@@ -15,7 +15,9 @@ if command -v xvfb-run >/dev/null 2>&1; then
 else
   RUN="node"
 fi
+node detector-unit.js
 $RUN test.js "$EXT"
 $RUN local-test.js "$EXT"
 $RUN editor-test.js "$EXT"
 $RUN chapter-test.js "$EXT"
+$RUN detector-test.js "$EXT"

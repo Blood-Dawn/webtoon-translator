@@ -62,6 +62,10 @@ Every panel that is not finished shows a badge with its place in the queue and a
 
 If a bubble was missed or came out wrong, press **Redo an area**, then drag a box around the text. That area is cropped, read and translated again as one bubble, and it replaces anything inside the box. Clicking a panel without dragging redoes the whole panel. Esc cancels.
 
+## Text detector
+
+When a local reader is used, a small model that ships inside the extension (about 11 MB, see THIRD_PARTY.md) first finds every speech bubble and its text. Each bubble is then cropped and read on its own, translated, and drawn into the bubble's own outline. This finds lines the whole panel read misses, such as the second line of a bubble. It runs on this computer with no download. If it cannot run, or finds nothing, the whole panel is read the old way. It can be turned off in the settings page.
+
 ## Rules, look and shortcuts
 
 In the settings page you can list lines to skip (for example laughter), fix the Korean before translating, and fix the English after translating. One rule per line, written as `pattern => replacement`, using a regular expression or plain text. You can also pick a bubble font and a text size. The last few translated lines of a story are passed to the translator so the next panel continues the conversation. In the Glossary tab, Import adds character names and genders from AniList for your review.

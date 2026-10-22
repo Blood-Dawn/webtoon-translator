@@ -120,6 +120,14 @@ https
           { gender: "Female", name: { full: "Foreign Name", native: "テスト" } }
         ] } } } }));
       }
+      if (host === "webtoon.kakao.com" && req.url.startsWith("/viewer/bubbles")) {
+        res.writeHead(200, { "content-type": "text/html" });
+        return res.end('<!doctype html><html><body style="margin:0;background:#111"><img src="/img/bubbles.png" width="760"></body></html>');
+      }
+      if (req.url === "/img/bubbles.png") {
+        res.writeHead(200, { "content-type": "image/png" });
+        return res.end(fs.readFileSync(__dirname + "/assets/bubbles.png"));
+      }
       if (host === "webtoon.kakao.com" && req.url.startsWith("/viewer")) {
         res.writeHead(200, { "content-type": "text/html" });
         return res.end(PAGE);

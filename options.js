@@ -1,5 +1,5 @@
 const $ = (id) => document.getElementById(id);
-const BACKUP_KEYS = ["model", "lang", "batchSeconds", "notes", "corrections", "glossary", "provider", "ollamaUrl", "ollamaReader", "translator", "ollamaTranslator", "useMemory", "contextCheck", "secondRead", "skipPatterns", "preDict", "postDict", "fontFamily", "textScale", "summaries"];
+const BACKUP_KEYS = ["model", "lang", "batchSeconds", "notes", "corrections", "glossary", "provider", "ollamaUrl", "ollamaReader", "translator", "ollamaTranslator", "useMemory", "contextCheck", "secondRead", "detector", "skipPatterns", "preDict", "postDict", "fontFamily", "textScale", "summaries"];
 const LOCAL_URL = /^http:\/\/(localhost|127\.0\.0\.1)(:\d{1,5})?\/?$/;
 const DEFAULT_OLLAMA = "http://localhost:11434";
 
@@ -45,12 +45,13 @@ function showTest(ok, text) {
 (async () => {
   // Older versions kept the key in regular extension storage. Move it into private storage.
   await Secrets.migrate().catch(() => {});
-  const cfg = await chrome.storage.local.get(["model", "lang", "batchSeconds", "keepDebug", "provider", "ollamaUrl", "ollamaReader", "translator", "ollamaTranslator", "useMemory", "contextCheck", "secondRead", "skipPatterns", "preDict", "postDict", "fontFamily", "textScale"]);
+  const cfg = await chrome.storage.local.get(["model", "lang", "batchSeconds", "keepDebug", "provider", "ollamaUrl", "ollamaReader", "translator", "ollamaTranslator", "useMemory", "contextCheck", "secondRead", "detector", "skipPatterns", "preDict", "postDict", "fontFamily", "textScale"]);
   $("provider").value = cfg.provider === "ollama" ? "ollama" : "gemini";
   $("translator").value = cfg.translator === "ollama" || cfg.translator === "chrome" ? cfg.translator : "same";
   $("useMemory").checked = cfg.useMemory !== false;
   $("contextCheck").checked = cfg.contextCheck !== false;
   $("secondRead").checked = cfg.secondRead !== false;
+  $("detector").checked = cfg.detector !== false;
   $("skipPatterns").value = cfg.skipPatterns || "";
   $("preDict").value = cfg.preDict || "";
   $("postDict").value = cfg.postDict || "";
@@ -98,6 +99,7 @@ $("save").addEventListener("click", async () => {
     useMemory: $("useMemory").checked,
     contextCheck: $("contextCheck").checked,
     secondRead: $("secondRead").checked,
+    detector: $("detector").checked,
     skipPatterns: $("skipPatterns").value.slice(0, 4000),
     preDict: $("preDict").value.slice(0, 8000),
     postDict: $("postDict").value.slice(0, 8000),
@@ -222,6 +224,7 @@ function cleanBackup(obj) {
   if (typeof s.useMemory === "boolean") out.useMemory = s.useMemory;
   if (typeof s.contextCheck === "boolean") out.contextCheck = s.contextCheck;
   if (typeof s.secondRead === "boolean") out.secondRead = s.secondRead;
+  if (typeof s.detector === "boolean") out.detector = s.detector;
   for (const k of ["skipPatterns", "preDict", "postDict"]) if (typeof s[k] === "string") out[k] = s[k].slice(0, 8000);
   if (["comic", "clean", "serif", "rounded"].includes(s.fontFamily)) out.fontFamily = s.fontFamily;
   if (typeof s.textScale === "number") out.textScale = Math.min(1.4, Math.max(0.6, s.textScale));

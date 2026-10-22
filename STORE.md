@@ -40,11 +40,13 @@ Translate the Korean text in webtoon panels on Kakao into English and display it
 * Host `https://page.kakao.com/*` and `https://webtoon.kakao.com/*`: the sites where the extension reads panels and shows translations.
 * Host `https://*.kakaocdn.net/*` and `https://*.daumcdn.net/*`: Kakao's image hosts, used as a fallback to download a panel that the page could not hand over directly.
 * Host `https://generativelanguage.googleapis.com/*`: Google's Gemini API, where translation requests are sent.
+* Host `https://graphql.anilist.co/*`: AniList's public API, used only when the reader presses Import in the Glossary tab. Only the series title they typed is sent.
+* `offscreen`: runs the bundled text detector (a small model and the ONNX runtime, both shipped inside the package) in a hidden extension page. It runs on the reader's computer, downloads nothing and sends nothing.
 * Optional hosts `http://localhost/*` and `http://127.0.0.1/*`: requested only when the reader turns on a local Ollama model, so the extension can talk to that server on the reader's own computer. Never requested otherwise.
 
 ## Remote code
 
-The extension does not load or run remote code. All scripts ship inside the package.
+The extension does not load or run remote code. All scripts, the ONNX runtime (WebAssembly) and the detector model ship inside the package. The extension page policy allows `wasm-unsafe-eval` only so the bundled runtime can run.
 
 ## Data usage disclosures
 

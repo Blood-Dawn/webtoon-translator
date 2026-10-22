@@ -1,4 +1,4 @@
-importScripts("secret.js", "ollama.js", "memory.js");
+importScripts("secret.js", "ollama.js", "memory.js", "detector-core.js");
 
 const DEFAULTS = { model: "gemini-3.8-flash", lang: "English" };
 const MAX_DEBUG_BATCHES = 5;
@@ -526,6 +526,105 @@ async function fetchAnilistCharacters(title) {
   return { title: String(names.english || names.romaji || names.native || t).slice(0, 120), characters: out };
 }
 
+// ---------- detector first reading ----------
+// A small model on this computer finds the bubbles and their text. Each one is cropped and read on its own,
+// which is more accurate than reading a whole panel and gives the translated text an exact place to sit.
+async function ensureOffscreen() {
+  const found = await chrome.runtime.getContexts({ contextTypes: ["OFFSCREEN_DOCUMENT"] });
+  if (found.length) return;
+  await chrome.offscreen.createDocument({ url: "offscreen.html", reasons: ["WORKERS"], justification: "Runs the text detector on this computer." });
+}
+
+async function detectOnDevice(dataUrl) {
+  await ensureOffscreen();
+  let last;
+  for (let i = 0; i < 24; i++) {
+    try {
+      const r = await chrome.runtime.sendMessage({ target: "offscreen", type: "detect", dataUrl });
+      if (r && r.ok) return r;
+      throw new Error((r && r.error) || "The detector gave no answer.");
+    } catch (e) {
+      last = e;
+      // The page may still be starting up.
+      if (!/Receiving end|Could not establish/i.test(String(e && e.message))) throw e;
+    }
+    await new Promise((res) => setTimeout(res, 250));
+  }
+  throw last || new Error("The detector page did not start.");
+}
+
+// The most common color in a crop is the bubble's fill. Text then gets whichever of black or white contrasts with it.
+function dominantColors(ctx, w, h) {
+  const px = ctx.getImageData(0, 0, w, h).data;
+  const step = Math.max(1, Math.floor((w * h) / 6000));
+  const buckets = new Map();
+  for (let i = 0; i < w * h; i += step) {
+    const r = px[i * 4];
+    const g = px[i * 4 + 1];
+    const b = px[i * 4 + 2];
+    const k = (r >> 5) * 64 + (g >> 5) * 8 + (b >> 5);
+    const e = buckets.get(k) || { n: 0, r: 0, g: 0, b: 0 };
+    e.n++;
+    e.r += r;
+    e.g += g;
+    e.b += b;
+    buckets.set(k, e);
+  }
+  let best = null;
+  for (const e of buckets.values()) if (!best || e.n > best.n) best = e;
+  if (!best) return { bg: "#ffffff", fg: "#111111" };
+  const c = [best.r, best.g, best.b].map((v) => Math.round(v / best.n));
+  const hex = "#" + c.map((v) => v.toString(16).padStart(2, "0")).join("");
+  const lum = 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2];
+  return { bg: hex, fg: lum > 140 ? "#111111" : "#ffffff" };
+}
+
+const OCR_PROMPT =
+  "Read all of the Korean text in this image exactly as written, in reading order. Put each line of text on its own line. Reply with only that text and nothing else. If there is no Korean text, reply with NONE.";
+
+async function detectAndRead(cfg, img) {
+  const dataUrl = "data:" + img.mime + ";base64," + img.data;
+  const det = await detectOnDevice(dataUrl);
+  const regions = DetectorCore.group(det.dets, det.W, det.H);
+  if (!regions.length) return { bubbles: [], regions: 0 };
+  const bmp = await createImageBitmap(await (await fetch(dataUrl)).blob());
+  const out = [];
+  let firstError = null;
+  try {
+    for (const r of regions) {
+      const [x1, y1, x2, y2] = DetectorCore.cropRect(r, det.W, det.H);
+      const cw = x2 - x1;
+      const ch = y2 - y1;
+      if (cw < 12 || ch < 12) continue;
+      // Small crops are enlarged, because vision models read tiny pictures badly.
+      const scale = Math.min(Math.max(1, 448 / Math.min(cw, ch)), 1600 / Math.max(cw, ch));
+      const w = Math.max(16, Math.round(cw * scale));
+      const h = Math.max(16, Math.round(ch * scale));
+      const canvas = new OffscreenCanvas(w, h);
+      const ctx = canvas.getContext("2d", { willReadFrequently: true });
+      ctx.drawImage(bmp, x1, y1, cw, ch, 0, 0, w, h);
+      const colors = dominantColors(ctx, w, h);
+      const data = await toBase64(await canvas.convertToBlob({ type: "image/jpeg", quality: 0.92 }));
+      let text = "";
+      try {
+        text = await Ollama.ocr(cfg.ollamaUrl, cfg.ollamaReader, data, OCR_PROMPT);
+      } catch (e) {
+        // A connection or model problem hits every region, so it is reported instead of skipped.
+        e.fromOllama = true;
+        if (!out.length && !firstError) firstError = e;
+        continue;
+      }
+      text = text.split(/\n+/).map((l) => l.trim()).filter(Boolean).join(" ");
+      if (/^none\b/i.test(text) || !countHangul(text)) continue;
+      out.push({ original: text, translation: text, box_2d: DetectorCore.overlayBox(r, det.W, det.H), bg: colors.bg, fg: colors.fg });
+    }
+  } finally {
+    bmp.close();
+  }
+  if (!out.length && firstError) throw firstError;
+  return { bubbles: out, regions: regions.length };
+}
+
 // Second read: a local reader often finds only the first line of a bubble. Any bubble whose text looks cut off
 // is cropped with extra room around it and read again. If the crop holds more Korean next to it, that longer
 // text replaces the first reading.
@@ -625,7 +724,7 @@ async function secondRead(cfg, img, bubbles, lang, alsoTranslate) {
 async function translate(url, dataUrl, panels, series, region) {
   const cfg = await chrome.storage.local.get([
     "model", "lang", "notes", "corrections", "keepDebug", "glossary",
-    "provider", "ollamaUrl", "ollamaReader", "translator", "ollamaTranslator", "summaries", "useMemory", "contextCheck", "secondRead", "preDict", "postDict", "skipPatterns"
+    "provider", "ollamaUrl", "ollamaReader", "translator", "ollamaTranslator", "summaries", "useMemory", "contextCheck", "secondRead", "preDict", "postDict", "skipPatterns", "detector"
   ]);
   const seriesKey = String(series || "").slice(0, 80);
   const summary = cfg.summaries && typeof cfg.summaries === "object" ? String(cfg.summaries[seriesKey] || "") : "";
@@ -682,10 +781,29 @@ async function translate(url, dataUrl, panels, series, region) {
   }
   // A region the reader drew a box around is one bubble, so the model is told to answer with one.
   if (region && localReader) prompt = "This image is a crop around one speech bubble or text area. Return all of its Korean text as ONE bubble, in reading order. " + prompt;
-  const read = localReader
-    ? await Ollama.read(cfg.ollamaUrl, cfg.ollamaReader, img.data, prompt, size)
-    : await callGemini(apiKey, model, img.mime, img.data, prompt);
-  let bubbles = localReader ? Ollama.mergeFragments(read.bubbles) : read.bubbles;
+  let warning = "";
+  let read = null;
+  let detected = false;
+  // Detector first: find the bubbles, then read each one on its own. If the detector cannot run, or finds nothing,
+  // the whole panel is read the old way, so a detector problem never leaves the page untranslated.
+  if (localReader && !region && cfg.detector !== false) {
+    try {
+      const d = await detectAndRead(cfg, img);
+      if (d.bubbles.length) {
+        read = { bubbles: d.bubbles, terms: [] };
+        detected = true;
+      }
+    } catch (e) {
+      if (e && e.fromOllama) throw e;
+      warning = "The text detector could not run, so the whole panel was read instead. " + (e && e.message ? e.message : "");
+    }
+  }
+  if (!read) {
+    read = localReader
+      ? await Ollama.read(cfg.ollamaUrl, cfg.ollamaReader, img.data, prompt, size)
+      : await callGemini(apiKey, model, img.mime, img.data, prompt);
+  }
+  let bubbles = localReader && !detected ? Ollama.mergeFragments(read.bubbles) : read.bubbles;
   if (region) {
     if (!bubbles.length) throw new Error("No Korean text was found in that area. Try drawing the box a little larger.");
     // Everything found inside a chosen area becomes a single bubble, so the sentence is translated whole.
@@ -696,14 +814,13 @@ async function translate(url, dataUrl, panels, series, region) {
     bubbles = [Object.assign({}, sorted[0], { original: joined("original"), translation: joined("translation"), box_2d: box })];
   }
   const terms = cleanTerms(read.terms);
-  if (localReader && !region && cfg.secondRead !== false && bubbles.length) {
+  if (localReader && !detected && !region && cfg.secondRead !== false && bubbles.length) {
     try {
       bubbles = await secondRead(cfg, img, bubbles, lang, !(cfg.translator === "ollama" && cfg.ollamaTranslator));
     } catch (e) {
       /* the first reading stays */
     }
   }
-  let warning = "";
 
   // The reader's own rules: lines to skip, and fixes to the Korean before it is translated.
   const skips = parseSkips(cfg.skipPatterns);
@@ -716,7 +833,9 @@ async function translate(url, dataUrl, panels, series, region) {
 
   // Optional second step: a translation model on this computer rewrites each line from the Korean text.
   // If it fails, the reader's own translation stays, so a local problem never blanks the page.
-  if (cfg.translator === "ollama" && cfg.ollamaTranslator && bubbles.length) {
+  // With the detector, the reader only copies text, so the translation model does the English. If none is chosen, the reading model does it.
+  const translatorModel = cfg.translator === "ollama" && cfg.ollamaTranslator ? cfg.ollamaTranslator : detected ? cfg.ollamaReader : "";
+  if (translatorModel && bubbles.length) {
     try {
       const norm = (s) => String(s || "").replace(/\s+/g, " ").trim();
       const fixes = cfg.corrections || {};
@@ -728,7 +847,7 @@ async function translate(url, dataUrl, panels, series, region) {
       const fallback = bubbles.map((b) => (Object.prototype.hasOwnProperty.call(fixes, norm(b.original)) ? fixes[norm(b.original)] : b.translation));
       const r = await Ollama.translateLines(
         cfg.ollamaUrl,
-        cfg.ollamaTranslator,
+        translatorModel,
         source,
         lang,
         (ko) => {
@@ -743,7 +862,7 @@ async function translate(url, dataUrl, panels, series, region) {
       if (cfg.contextCheck !== false && bubbles.length > 1) {
         try {
           const ordered = bubbles.map((b, i) => ({ i, y: Array.isArray(b.box_2d) ? b.box_2d[0] : 0 })).sort((a, b) => a.y - b.y);
-          const fixed = await Ollama.polish(cfg.ollamaUrl, cfg.ollamaTranslator, ordered.map((o) => ({ ko: bubbles[o.i].original, en: bubbles[o.i].translation })), lang, base);
+          const fixed = await Ollama.polish(cfg.ollamaUrl, translatorModel, ordered.map((o) => ({ ko: bubbles[o.i].original, en: bubbles[o.i].translation })), lang, base);
           ordered.forEach((o, n) => {
             if (!Object.prototype.hasOwnProperty.call(fixes, norm(bubbles[o.i].original))) bubbles[o.i] = Object.assign({}, bubbles[o.i], { translation: fixed[n] });
           });

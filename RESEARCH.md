@@ -37,7 +37,7 @@ Local reader and translator, translation memory, story summaries, glossary with 
 
 ## Roadmap
 
-1. Detector first pipeline: run a bubble and text detector in the browser (ONNX), then read only the detected crops. This fixes missed lines at the source instead of repairing them afterwards. It needs a model download of tens of megabytes and an ONNX runtime, so it needs its own permission and storage design.
+1. Detector first pipeline: done in 1.3.0. A bubble and text detector runs in the browser through ONNX Runtime Web, and each detected bubble is read on its own. Possible follow ups: the larger detector files for higher accuracy, and WebGPU for speed.
 2. Dedicated Korean OCR instead of the vision model for reading, with the vision model only for hard cases.
 3. Text removal so the original lettering does not show behind a bubble. Bubbles are opaque boxes today, which hides it but covers art.
 4. Export a translated chapter as images or a PDF.
