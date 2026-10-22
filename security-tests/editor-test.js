@@ -32,7 +32,7 @@ function prepare(src) {
   });
   const sw = ctx.serviceWorkers()[0] || (await ctx.waitForEvent("serviceworker"));
   await sw.evaluate(() => Secrets.set("apiKey", "AIzaSyEDITORTEST0000000000000000000"));
-  await sw.evaluate(() => chrome.storage.local.set({ enabled: true, batchSeconds: 3, model: "gemini-3.8-flash" }));
+  await sw.evaluate(() => chrome.storage.local.set({ enabled: true, chapterMode: false, batchSeconds: 3, model: "gemini-3.8-flash" }));
 
   const page = await ctx.newPage();
   await page.setViewportSize({ width: 1100, height: 2600 });

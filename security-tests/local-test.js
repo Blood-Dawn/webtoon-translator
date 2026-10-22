@@ -108,7 +108,7 @@ const geminiCount = () => fs.readFileSync(LOG, "utf8").split("\n").filter((l) =>
   await options.close();
 
   await a.sw.evaluate(() =>
-    chrome.storage.local.set({ enabled: true, batchSeconds: 3, keepDebug: true, translator: "ollama", ollamaTranslator: "translategemma:12b", ollamaUrl: "http://localhost:11434" })
+    chrome.storage.local.set({ enabled: true, chapterMode: false, batchSeconds: 3, keepDebug: true, translator: "ollama", ollamaTranslator: "translategemma:12b", ollamaUrl: "http://localhost:11434" })
   );
   // One earlier line of this series is already remembered, and the series has a story summary.
   await a.sw.evaluate(() =>
@@ -137,7 +137,7 @@ const geminiCount = () => fs.readFileSync(LOG, "utf8").split("\n").filter((l) =>
   ollamaLog.length = 0;
   const b = await launch(ext);
   await b.sw.evaluate(() =>
-    chrome.storage.local.set({ enabled: true, batchSeconds: 3, provider: "ollama", ollamaReader: "visionmodel:7b", translator: "same", ollamaUrl: "http://localhost:11434" })
+    chrome.storage.local.set({ enabled: true, chapterMode: false, batchSeconds: 3, provider: "ollama", ollamaReader: "visionmodel:7b", translator: "same", ollamaUrl: "http://localhost:11434" })
   );
   const geminiBeforeB = geminiCount();
   const pageB = await b.ctx.newPage();

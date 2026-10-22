@@ -73,7 +73,7 @@ const LOG = process.env.PT_LOG || path.join(__dirname, "requests.jsonl");
       ]
     })
   );
-  await sw.evaluate(() => chrome.storage.local.set({ enabled: true, batchSeconds: 3, model: "gemini-3.8-flash", notes: "CANARY-NOTES private series notes" }));
+  await sw.evaluate(() => chrome.storage.local.set({ enabled: true, chapterMode: false, batchSeconds: 3, model: "gemini-3.8-flash", notes: "CANARY-NOTES private series notes" }));
   await options.close();
 
   const page = await ctx.newPage();

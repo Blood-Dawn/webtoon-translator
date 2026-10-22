@@ -15,7 +15,7 @@
   const MAX_GLOSSARY = 500;
   const MAX_PENDING = 100;
   const MAX_CHAPTERS_TRACKED = 30;
-  const KT = (window.KT = { ui: null, settings: { batchSeconds: 10 }, corrections: {}, notes: "", glossary: [], editStats: {}, MOVE_LIMIT: 3000 });
+  const KT = (window.KT = { ui: null, settings: { batchSeconds: 10, chapterMode: false }, corrections: {}, notes: "", glossary: [], editStats: {}, MOVE_LIMIT: 3000 });
   const settings = KT.settings;
 
   const state = {
@@ -974,7 +974,7 @@
       const left = avg - (Date.now() - state.batchStart) / 1000;
       return left > 1 ? "Translating now, about " + fmtSecs(left) + " left" : "Translating now, almost done";
     }
-    if (!state.enabled) return "";
+    if (!state.enabled || holding()) return "";
     const q = info.m.get(p);
     if (!q) return "Waiting";
     if (!info.avg) return "Queued, number " + q.pos + ". Timing starts after the first panel.";
@@ -984,7 +984,7 @@
   const badges = new Map(); // panel -> element
   const pill = document.createElement("div");
   Object.assign(pill.style, {
-    position: "fixed", right: "16px", bottom: "72px", width: "230px", padding: "8px 10px", background: "rgba(20,20,20,.92)", color: "#fff",
+    position: "fixed", right: "16px", bottom: "72px", width: "250px", padding: "8px 10px", background: "rgba(20,20,20,.92)", color: "#fff",
     font: "12px/1.35 Arial, sans-serif", borderRadius: "8px", zIndex: "2147483647", display: "none", pointerEvents: "none"
   });
   const pillText = document.createElement("div");
@@ -993,7 +993,21 @@
   Object.assign(pillBar.style, { height: "6px", background: "#444", borderRadius: "3px", marginTop: "6px", overflow: "hidden" });
   Object.assign(pillFill.style, { height: "100%", width: "0%", background: "#4ade80", transition: "width .3s" });
   pillBar.appendChild(pillFill);
-  pill.append(pillText, pillBar);
+  const mkBtn = (label, bg) => {
+    const b = document.createElement("button");
+    b.textContent = label;
+    Object.assign(b.style, { display: "none", width: "100%", marginTop: "6px", padding: "6px 8px", border: "none", borderRadius: "6px", background: bg, color: "#fff", font: "600 12px Arial, sans-serif", cursor: "pointer", pointerEvents: "auto" });
+    return b;
+  };
+  const buildBtn = mkBtn("Build strip and translate", "#1a73e8");
+  const exitBtn = mkBtn("Back to the original page", "#555");
+  const retryBtn = mkBtn("Retry failed panels", "#b45309");
+  const redoBtn = mkBtn("Redo an area", "#2f6f4f");
+  buildBtn.addEventListener("click", () => buildStrip());
+  exitBtn.addEventListener("click", () => exitStrip());
+  retryBtn.addEventListener("click", () => retryFailed());
+  redoBtn.addEventListener("click", () => startPick());
+  pill.append(pillText, pillBar, buildBtn, retryBtn, redoBtn, exitBtn);
 
   function progressTick() {
     if (!pill.isConnected) document.documentElement.appendChild(pill);
@@ -1014,9 +1028,25 @@
       else if (p.status !== "error") working++;
     }
     pill.style.display = total ? "block" : "none";
-    const left = working && info.avg ? " , about " + fmtSecs(working * info.avg + info.rem) + " left" : "";
-    pillText.textContent = done + " of " + total + " panels translated" + (info.avg ? ", " + info.avg.toFixed(1) + " s per panel" : ", measuring speed") + left.replace(" ,", ",");
-    pillFill.style.width = total ? Math.round((done / total) * 100) + "%" : "0%";
+    let failed = 0;
+    for (const p of state.panels.values()) if (p.status === "error") failed++;
+    const collecting = holding();
+    const atEnd = window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 60;
+    const left = working && info.avg ? ", about " + fmtSecs(working * info.avg + info.rem) + " left" : "";
+    if (collecting) {
+      pillText.textContent = total + " panels collected. " + (atEnd ? "You reached the end of the page. Press the button to build the strip and translate." : "Keep scrolling until the whole chapter has loaded, then press the button.");
+      pillFill.style.width = "0%";
+    } else {
+      pillText.textContent = done + " of " + total + " panels translated" + (info.avg ? ", " + info.avg.toFixed(1) + " s per panel" : ", measuring speed") + left + (state.strip && working === 0 && failed === 0 && total ? ". All done." : "");
+      pillFill.style.width = total ? Math.round((done / total) * 100) + "%" : "0%";
+    }
+    buildBtn.style.display = collecting && total ? "block" : "none";
+    buildBtn.textContent = state.building ? "Building the strip" : "Build strip and translate";
+    buildBtn.disabled = !!state.building;
+    exitBtn.style.display = state.strip ? "block" : "none";
+    retryBtn.style.display = failed ? "block" : "none";
+    retryBtn.textContent = "Retry " + failed + " failed panel" + (failed === 1 ? "" : "s");
+    redoBtn.style.display = collecting ? "none" : "block";
 
     const vh = window.innerHeight;
     const live = new Set();
@@ -1049,6 +1079,285 @@
     }
   }
   setInterval(progressTick, 400);
+
+  // ---------- chapter mode: collect the whole chapter, build a clean strip, then translate it ----------
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // While collecting, every loaded panel on the page is noted, not only the ones near the screen.
+  setInterval(() => {
+    if (!state.enabled || !settings.chapterMode || state.strip || state.building) return;
+    document.querySelectorAll("img").forEach((img) => {
+      if (img.complete && img.naturalWidth && img.clientWidth >= MIN_WIDTH && img.naturalHeight >= MIN_NATURAL_HEIGHT) enqueue(img);
+    });
+  }, 1500);
+
+  async function buildStrip() {
+    if (state.strip || state.building) return;
+    state.building = true;
+    try {
+      while (state.sending) await sleep(300);
+      const list = Array.from(state.panels.values()).filter((p) => !p.strip);
+      for (const p of list) if (p.img && p.img.isConnected) p.pos = docY(p.img);
+      list.sort(orderCmp);
+      for (const p of list) {
+        if (p.keep) continue;
+        try {
+          if (p.img && p.img.isConnected) p.keep = (await readPanelPixels(p.img)).dataUrl;
+        } catch (e) {
+          /* this panel is left out */
+        }
+      }
+      const usable = list.filter((p) => p.keep);
+      if (!usable.length) {
+        toast("No panels have loaded yet. Scroll down the chapter first.");
+        return;
+      }
+      clearTimeout(state.timer);
+      state.timer = null;
+      state.flushAt = 0;
+      state.pending.clear();
+      for (const o of state.overlays.values()) o.el.remove();
+      state.overlays.clear();
+      state.panels.clear();
+
+      const box = document.createElement("div");
+      box.id = "kt-strip";
+      Object.assign(box.style, { position: "relative", width: "100%", background: "#1a1a1a", padding: "12px 0 120px", textAlign: "center", lineHeight: "0", minHeight: "100vh" });
+      const made = [];
+      usable.forEach((old, i) => {
+        const img = new Image();
+        img.dataset.ktStrip = "1";
+        img.src = old.keep;
+        Object.assign(img.style, { display: "block", margin: "0 auto", width: "min(760px, 100%)", height: "auto" });
+        box.appendChild(img);
+        made.push({ old, img, i });
+      });
+      document.documentElement.appendChild(box);
+      document.body.style.setProperty("display", "none", "important");
+      state.strip = box;
+      await Promise.all(made.map((m) => m.img.decode().catch(() => {})));
+
+      for (const { old, img, i } of made) {
+        const key = old.key || "c:h" + hashStr(old.keep);
+        const p = { img, src: "kt-strip:" + i, status: "pending", key, dataUrl: null, source: img, boxes: null, keep: old.keep, pos: i, seq: i, tries: 0, strip: true };
+        state.panels.set(p.src, p);
+        let hit;
+        if (old.status === "done" && old.boxes) hit = old.boxes;
+        else {
+          try {
+            hit = (await chrome.storage.local.get(key))[key];
+          } catch (e) {
+            hit = undefined;
+          }
+        }
+        if (hit !== undefined) {
+          p.status = "done";
+          p.boxes = hit;
+          render(p);
+        } else {
+          state.pending.add(p);
+        }
+      }
+      window.scrollTo(0, 0);
+      schedule();
+    } finally {
+      state.building = false;
+    }
+  }
+
+  function exitStrip() {
+    if (!state.strip) return;
+    clearTimeout(state.timer);
+    state.timer = null;
+    state.flushAt = 0;
+    state.strip.remove();
+    state.strip = null;
+    document.body.style.removeProperty("display");
+    for (const o of state.overlays.values()) o.el.remove();
+    state.overlays.clear();
+    state.pending.clear();
+    state.panels.clear();
+    scan();
+  }
+
+  function retryFailed() {
+    for (const p of state.panels.values()) {
+      if (p.status !== "error") continue;
+      p.status = "pending";
+      p.tries = 0;
+      state.pending.add(p);
+    }
+    schedule();
+  }
+
+  KT.buildStrip = buildStrip;
+  KT.exitStrip = exitStrip;
+  KT.retryFailed = retryFailed;
+  KT.setChapterMode = (on) => chrome.storage.local.set({ chapterMode: !!on });
+
+  // ---------- redo tool: drag a box around missed text, or click a panel to redo all of it ----------
+  const hitPanel = (x, y, x2, y2) => {
+    let best = null;
+    let bestA = 0;
+    for (const p of state.panels.values()) {
+      if (!p.img || !p.img.isConnected) continue;
+      const r = p.img.getBoundingClientRect();
+      const w = Math.min(r.right, x2) - Math.max(r.left, x);
+      const h = Math.min(r.bottom, y2) - Math.max(r.top, y);
+      const a = w > 0 && h > 0 ? w * h : 0;
+      if (a > bestA) {
+        bestA = a;
+        best = p;
+      }
+    }
+    return best;
+  };
+
+  async function redoPanel(p) {
+    if (holding()) {
+      toast("Chapter mode is still collecting. Build the strip first, then redo panels.");
+      return;
+    }
+    try {
+      const px = await readPanelPixels(p.img);
+      p.source = px.source;
+      p.dataUrl = px.dataUrl;
+    } catch (e) {
+      toast("Could not read that panel again: " + (e.message || e));
+      return;
+    }
+    if (p.key) chrome.storage.local.remove(p.key).catch(() => {});
+    const o = state.overlays.get(p.src);
+    if (o) {
+      o.el.remove();
+      state.overlays.delete(p.src);
+    }
+    p.boxes = null;
+    p.status = "pending";
+    p.tries = 0;
+    state.pending.add(p);
+    toast("Redoing that whole panel now.");
+    schedule();
+  }
+
+  async function translateRegion(p, sel) {
+    const ir = p.img.getBoundingClientRect();
+    const clamp01 = (v) => Math.min(1, Math.max(0, v));
+    const f = {
+      x1: clamp01((sel.x1 - ir.left) / ir.width),
+      y1: clamp01((sel.y1 - ir.top) / ir.height),
+      x2: clamp01((sel.x2 - ir.left) / ir.width),
+      y2: clamp01((sel.y2 - ir.top) / ir.height)
+    };
+    if (f.x2 - f.x1 < 0.02 || f.y2 - f.y1 < 0.01) {
+      toast("That box is too small.");
+      return;
+    }
+    toast("Reading that area on this computer. About " + (avgSecs() ? fmtSecs(avgSecs() + 3) : "a few seconds") + ".");
+    try {
+      const px = await readPanelPixels(p.img);
+      const nw = px.source.naturalWidth;
+      const nh = px.source.naturalHeight;
+      // A little extra around the box helps the reader see the whole bubble.
+      const padX = 0.02;
+      const padY = 12 / nh;
+      const r = { x1: clamp01(f.x1 - padX), y1: clamp01(f.y1 - padY), x2: clamp01(f.x2 + padX), y2: clamp01(f.y2 + padY) };
+      const sx = Math.round(r.x1 * nw);
+      const sy = Math.round(r.y1 * nh);
+      const sw = Math.max(8, Math.round((r.x2 - r.x1) * nw));
+      const sh = Math.max(8, Math.round((r.y2 - r.y1) * nh));
+      // Small crops are enlarged, because vision models read tiny pictures badly.
+      const scale = Math.min(Math.max(1, 448 / Math.min(sw, sh)), 1600 / Math.max(sw, sh));
+      const c = document.createElement("canvas");
+      c.width = Math.max(8, Math.round(sw * Math.max(scale, 0.1)));
+      c.height = Math.max(8, Math.round(sh * Math.max(scale, 0.1)));
+      c.getContext("2d").drawImage(px.source, sx, sy, sw, sh, 0, 0, c.width, c.height);
+      const res = await chrome.runtime.sendMessage({ type: "translate", url: "region", dataUrl: c.toDataURL("image/jpeg", 0.92), panels: 1, series: KT.seriesKey(), region: true });
+      if (!res || !res.ok) throw new Error((res && res.error) || "Translation failed");
+      const b = res.boxes && res.boxes[0];
+      if (!b || !Array.isArray(b.box_2d) || b.box_2d.length !== 4) throw new Error("The reader found no usable text there.");
+      const rw = r.x2 - r.x1;
+      const rh = r.y2 - r.y1;
+      const [y1, x1, y2, x2] = b.box_2d.map(Number);
+      const to = (v, o, span) => Math.round(Math.min(1000, Math.max(0, (o + (v / 1000) * span) * 1000)));
+      const nb = Object.assign({}, b, { box_2d: [to(y1, r.y1, rh), to(x1, r.x1, rw), to(y2, r.y1, rh), to(x2, r.x1, rw)], manual: true });
+      applyCorrections([nb]);
+      learnTerms(res.terms);
+      // Anything already drawn inside the chosen area is replaced by the new bubble.
+      const keep = (p.boxes || []).filter((e) => {
+        if (!Array.isArray(e.box_2d)) return true;
+        const cx = (e.box_2d[1] + e.box_2d[3]) / 2000;
+        const cy = (e.box_2d[0] + e.box_2d[2]) / 2000;
+        return !(cx >= f.x1 && cx <= f.x2 && cy >= f.y1 && cy <= f.y2);
+      });
+      p.boxes = keep.concat([nb]);
+      p.status = "done";
+      if (p.key) {
+        try {
+          await chrome.storage.local.set({ [p.key]: p.boxes });
+        } catch (e) {
+          /* not saved */
+        }
+      }
+      render(p);
+      toast("Done. Click the new bubble to adjust it.");
+    } catch (e) {
+      toast(e.message || String(e));
+    }
+  }
+
+  let picker = null;
+  function stopPick() {
+    if (!picker) return;
+    picker.shade.remove();
+    picker.rect.remove();
+    window.removeEventListener("keydown", picker.onKey, true);
+    picker = null;
+    redoBtn.textContent = "Redo an area";
+  }
+  function startPick() {
+    if (picker) return stopPick();
+    const shade = document.createElement("div");
+    Object.assign(shade.style, { position: "fixed", inset: "0", cursor: "crosshair", background: "rgba(0,0,0,.12)", zIndex: "2147483500" });
+    const rect = document.createElement("div");
+    Object.assign(rect.style, { position: "fixed", border: "2px dashed #4ade80", background: "rgba(74,222,128,.15)", zIndex: "2147483501", display: "none", pointerEvents: "none" });
+    document.documentElement.append(shade, rect);
+    const onKey = (e) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        stopPick();
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    picker = { shade, rect, onKey };
+    redoBtn.textContent = "Cancel";
+    toast("Drag a box around the text that was missed. Or click a panel to redo all of it. Esc cancels.");
+    let start = null;
+    shade.addEventListener("mousedown", (e) => {
+      start = { x: e.clientX, y: e.clientY };
+      e.preventDefault();
+    });
+    shade.addEventListener("mousemove", (e) => {
+      if (!start) return;
+      const x1 = Math.min(start.x, e.clientX);
+      const y1 = Math.min(start.y, e.clientY);
+      Object.assign(rect.style, { display: "block", left: x1 + "px", top: y1 + "px", width: Math.abs(e.clientX - start.x) + "px", height: Math.abs(e.clientY - start.y) + "px" });
+    });
+    shade.addEventListener("mouseup", (e) => {
+      if (!start) return;
+      const sel = { x1: Math.min(start.x, e.clientX), y1: Math.min(start.y, e.clientY), x2: Math.max(start.x, e.clientX), y2: Math.max(start.y, e.clientY) };
+      stopPick();
+      const click = sel.x2 - sel.x1 < 8 && sel.y2 - sel.y1 < 8;
+      const p = click ? hitPanel(sel.x1, sel.y1, sel.x1 + 1, sel.y1 + 1) : hitPanel(sel.x1, sel.y1, sel.x2, sel.y2);
+      if (!p) {
+        toast("No panel found there.");
+        return;
+      }
+      if (click) redoPanel(p);
+      else translateRegion(p, sel);
+    });
+  }
+  KT.startPick = startPick;
 
   // ---------- status text for the GUI ----------
   KT.statsText = () => {
@@ -1106,6 +1415,11 @@
       if (changes.batchSeconds) settings.batchSeconds = Number(changes.batchSeconds.newValue);
       if (changes.provider) settings.localReader = changes.provider.newValue === "ollama";
       if (changes.translator) settings.translator = changes.translator.newValue;
+      if (changes.chapterMode) {
+        settings.chapterMode = changes.chapterMode.newValue !== false;
+        if (!settings.chapterMode && state.strip) KT.exitStrip();
+        schedule();
+      }
       if (changes.notes) KT.notes = changes.notes.newValue || "";
       if (changes.corrections) KT.corrections = changes.corrections.newValue || {};
       if (changes.glossary) KT.glossary = changes.glossary.newValue || [];
@@ -1119,9 +1433,10 @@
   (async () => {
     let saved = false;
     try {
-      const cfg = await chrome.storage.local.get(["enabled", "batchSeconds", "notes", "corrections", "glossary", "editStats", "provider", "summaries", "translator"]);
+      const cfg = await chrome.storage.local.get(["enabled", "batchSeconds", "notes", "corrections", "glossary", "editStats", "provider", "summaries", "translator", "chapterMode"]);
       settings.localReader = cfg.provider === "ollama";
       settings.translator = cfg.translator;
+      settings.chapterMode = cfg.chapterMode !== false;
       KT.summaries = cfg.summaries && typeof cfg.summaries === "object" ? cfg.summaries : {};
       KT.glossary = Array.isArray(cfg.glossary) ? cfg.glossary : [];
       KT.editStats = cfg.editStats || {};

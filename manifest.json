@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Webtoon Translator (Gemini)",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "description": "Translates Korean webtoon speech bubbles on Kakao as you scroll, using the Gemini API.",
   "permissions": ["storage", "unlimitedStorage", "declarativeNetRequest"],
   "host_permissions": [

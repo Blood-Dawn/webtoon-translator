@@ -143,7 +143,7 @@ chrome.action.onClicked.addListener(() => chrome.runtime.openOptionsPage());
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || !trustedSender(sender)) return false;
   if (msg.type === "translate") {
-    translate(msg.url, msg.dataUrl, msg.panels, msg.series)
+    translate(msg.url, msg.dataUrl, msg.panels, msg.series, msg.region === true)
       .then((r) => sendResponse({ ok: true, boxes: r.boxes, terms: r.terms, warning: r.warning }))
       .catch((e) => sendResponse({ ok: false, error: e.message, code: e.code }));
     return true;
@@ -439,7 +439,7 @@ async function summarize(previous, lines) {
   return s.slice(0, 1500);
 }
 
-async function translate(url, dataUrl, panels, series) {
+async function translate(url, dataUrl, panels, series, region) {
   const cfg = await chrome.storage.local.get([
     "model", "lang", "notes", "corrections", "keepDebug", "glossary",
     "provider", "ollamaUrl", "ollamaReader", "translator", "ollamaTranslator", "summaries", "useMemory", "contextCheck"
@@ -497,10 +497,21 @@ async function translate(url, dataUrl, panels, series) {
         : "Copy the same Korean into translation, which is translated later. ") +
       "Keep line breaks as spaces. Skip logos and watermarks. Give bg and fg as hex colors for the bubble background and the text.";
   }
+  // A region the reader drew a box around is one bubble, so the model is told to answer with one.
+  if (region && localReader) prompt = "This image is a crop around one speech bubble or text area. Return all of its Korean text as ONE bubble, in reading order. " + prompt;
   const read = localReader
     ? await Ollama.read(cfg.ollamaUrl, cfg.ollamaReader, img.data, prompt, size)
     : await callGemini(apiKey, model, img.mime, img.data, prompt);
   let bubbles = localReader ? Ollama.mergeFragments(read.bubbles) : read.bubbles;
+  if (region) {
+    if (!bubbles.length) throw new Error("No Korean text was found in that area. Try drawing the box a little larger.");
+    // Everything found inside a chosen area becomes a single bubble, so the sentence is translated whole.
+    const sorted = bubbles.slice().sort((x, y) => (x.box_2d ? x.box_2d[0] : 0) - (y.box_2d ? y.box_2d[0] : 0) || (x.box_2d ? x.box_2d[1] : 0) - (y.box_2d ? y.box_2d[1] : 0));
+    const joined = (k) => sorted.map((x) => String(x[k] || "").trim()).filter(Boolean).join(" ");
+    const boxes = sorted.map((x) => x.box_2d).filter((x) => Array.isArray(x) && x.length === 4);
+    const box = boxes.length ? [Math.min(...boxes.map((x) => x[0])), Math.min(...boxes.map((x) => x[1])), Math.max(...boxes.map((x) => x[2])), Math.max(...boxes.map((x) => x[3]))] : [0, 0, 1000, 1000];
+    bubbles = [Object.assign({}, sorted[0], { original: joined("original"), translation: joined("translation"), box_2d: box })];
+  }
   const terms = cleanTerms(read.terms);
   let warning = "";
 

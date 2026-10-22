@@ -79,6 +79,8 @@
 
   <div class="pane on" data-pane="status">
     <div class="row"><button class="b primary" id="toggle">Turn on</button></div>
+    <label style="display:flex;gap:8px;align-items:flex-start;margin:8px 0"><input type="checkbox" id="chapter" style="margin-top:3px"><span>Chapter mode. Collect the whole chapter first, build one clean strip, then translate it all.</span></label>
+    <div class="row"><button class="b" id="buildstrip">Build strip and translate</button><button class="b" id="redoarea">Redo an area</button></div>
     <label for="secs">Seconds to wait before sending a batch</label>
     <input type="number" id="secs" min="0" max="60" step="0.5">
     <div class="stat" id="stats" style="margin-top:10px"></div>
@@ -190,6 +192,7 @@
 
   function syncPanel() {
     $("secs").value = KT.settings.batchSeconds || 10;
+    $("chapter").checked = !!KT.settings.chapterMode;
     $("notes").value = KT.notes || "";
     $("summary").value = KT.summary || "";
     $("toggle").textContent = KT.state.enabled ? "Turn translating off" : "Turn translating on";
@@ -220,6 +223,17 @@
   $("toggle").addEventListener("click", async () => {
     await KT.setEnabled(!KT.state.enabled);
     syncPanel();
+  });
+
+  $("chapter").addEventListener("change", () => KT.setChapterMode($("chapter").checked));
+  $("buildstrip").addEventListener("click", () => {
+    panel.classList.remove("open");
+    if (!KT.settings.chapterMode) KT.setChapterMode(true);
+    KT.buildStrip();
+  });
+  $("redoarea").addEventListener("click", () => {
+    panel.classList.remove("open");
+    KT.startPick();
   });
 
   $("secs").addEventListener("change", async () => {
